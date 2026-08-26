@@ -220,6 +220,31 @@ class S3MultipartWriter:
     def truncate(self, size):
         pass
 
+def check_smb_path(path, label="SMB"):
+    """
+    SMB is a FILESYSTEM PATH, not a protocol client.
+
+    Both the SMB and NFS storage types resolve to LocalStorageProvider — nothing
+    in this codebase speaks either protocol (pysmb is not imported anywhere). On
+    Windows a UNC path works because the OS resolves it natively. On Linux it
+    does not: opening a UNC path creates a file with backslashes in its NAME, in
+    the current directory, so backups appear to succeed while landing nowhere
+    near the share.
+
+    Returns an error string when the path cannot work on this platform, else None.
+    """
+    if not path:
+        return f"{label} storage selected but no path is set."
+    if path.startswith("\\\\") and os.name != "nt":
+        return (
+            f"{label} path {path!r} is a Windows UNC path, which this host cannot "
+            f"resolve. Mount the share at the OS level (e.g. via /etc/fstab with "
+            f"cifs-utils) and enter the local mount point instead, such as "
+            f"/mnt/backups."
+        )
+    return None
+
+
 def get_storage(config):
     if config.storage_type == "S3":
         return S3StorageProvider(
@@ -232,6 +257,10 @@ def get_storage(config):
     elif config.storage_type == "NFS":
         return LocalStorageProvider(config.nfs_path)
     else: # Default to SMB
+        problem = check_smb_path(config.smb_unc_path)
+        if problem:
+            log_error(f"[STORAGE] {problem}")
+            raise ValueError(problem)
         return LocalStorageProvider(config.smb_unc_path)
 
 
@@ -260,7 +289,8 @@ def get_secondary_storage(config):
         return LocalStorageProvider(path.rstrip("/"))
     # SMB
     path = getattr(config, "secondary_smb_unc_path", "") or ""
-    if not path:
-        log_warn("[COPY] Secondary SMB enabled but UNC path is empty")
+    problem = check_smb_path(path, label="Secondary SMB")
+    if problem:
+        log_warn(f"[COPY] {problem}")
         return None
     return LocalStorageProvider(path.rstrip("/"))

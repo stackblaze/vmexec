@@ -1,7 +1,7 @@
 """
 vsphere_context.py — Standalone ESXi and vCenter connection helpers.
 
-NovaBak may register either a standalone ESXi host or a vCenter Server.
+VMExec may register either a standalone ESXi host or a vCenter Server.
 Transport code uses this module for VM lookup, datacenter paths, moRefs,
 and VDDK/NFC capability detection.
 """
@@ -191,7 +191,12 @@ def build_nbdkit_vddk_cmd(
         disk_ds_path,
     ]
     conn_type = resolve_connection_type(si, stored_type)
-    cookie = get_session_cookie(si)
-    if cookie:
-        cmd.insert(-1, f"cookie={cookie}")
+    # vCenter ONLY. A standalone ESXi host authenticates with user/password
+    # against itself and has no SOAP session to hand VDDK; passing a cookie=
+    # there contradicts both docstrings above and is what
+    # test_build_nbdkit_cmd_standalone has been failing on.
+    if conn_type == CONN_VCENTER:
+        cookie = get_session_cookie(si)
+        if cookie:
+            cmd.insert(-1, f"cookie={cookie}")
     return cmd, conn_type

@@ -670,7 +670,7 @@ def api_test_smtp(request: Request, db: Session = Depends(get_db)):
         from email.mime.text import MIMEText
         msg = MIMEText("This is a test email from VMExec.")
         msg["Subject"] = "[VMExec] Test Email"
-        msg["From"] = config.smtp_user if config.smtp_user else "novabak@local"
+        msg["From"] = config.smtp_user if config.smtp_user else "vmexec@local"
         msg["To"] = config.smtp_to_email
         if config.smtp_use_ssl:
             server = smtplib.SMTP_SSL(config.smtp_server, config.smtp_port, timeout=10)

@@ -4,6 +4,7 @@ import datetime
 import sqlite3
 import os
 from config_env import SQLALCHEMY_DATABASE_URL, DATA_DIR
+from crypto_util import EncryptedString, migrate_plaintext_secrets
 
 Base = declarative_base()
 
@@ -48,7 +49,7 @@ class ESXiHost(Base):
     name = Column(String, unique=True) # User-friendly display name
     host_ip = Column(String)
     username = Column(String)
-    password = Column(String) # For production this should ideally be encrypted
+    password = Column(EncryptedString)  # encrypted at rest — see crypto_util.py
     # standalone | vcenter | auto (detect on connect)
     connection_type = Column(String, default="auto")
     
@@ -61,12 +62,12 @@ class Config(Base):
     # TrueNAS SMB Config
     smb_unc_path = Column(String, default="")
     smb_user = Column(String, default="")
-    smb_password = Column(String, default="")
+    smb_password = Column(EncryptedString, default="")
     # Email Settings
     smtp_server = Column(String, default="")
     smtp_port = Column(Integer, default=587)
     smtp_user = Column(String, default="")
-    smtp_password = Column(String, default="")
+    smtp_password = Column(EncryptedString, default="")
     smtp_to_email = Column(String, default="")
     smtp_use_tls = Column(Boolean, default=True)
     smtp_use_ssl = Column(Boolean, default=False)
@@ -74,7 +75,7 @@ class Config(Base):
     imap_server = Column(String, default="")
     imap_port = Column(Integer, default=993)
     imap_user = Column(String, default="")
-    imap_password = Column(String, default="")
+    imap_password = Column(EncryptedString, default="")
     imap_use_ssl = Column(Boolean, default=True)
     # Performance Tuning
     perf_parallel_threads = Column(Integer, default=0) # 0 = default
@@ -98,7 +99,7 @@ class Config(Base):
     nfs_path = Column(String, default="")
     s3_endpoint = Column(String, default="")
     s3_access_key = Column(String, default="")
-    s3_secret_key = Column(String, default="")
+    s3_secret_key = Column(EncryptedString, default="")
     s3_bucket = Column(String, default="")
     s3_region = Column(String, default="us-east-1")
     # Retention mode: count (legacy) or gfs (grandfather-father-son)
@@ -112,10 +113,10 @@ class Config(Base):
     secondary_nfs_path = Column(String, default="")
     secondary_smb_unc_path = Column(String, default="")
     secondary_smb_user = Column(String, default="")
-    secondary_smb_password = Column(String, default="")
+    secondary_smb_password = Column(EncryptedString, default="")
     secondary_s3_endpoint = Column(String, default="")
     secondary_s3_access_key = Column(String, default="")
-    secondary_s3_secret_key = Column(String, default="")
+    secondary_s3_secret_key = Column(EncryptedString, default="")
     secondary_s3_bucket = Column(String, default="")
     secondary_s3_region = Column(String, default="us-east-1")
 
@@ -272,7 +273,11 @@ def init_db():
         conn.commit()
         conn.close()
 
-    # 3. Default Row Initialization
+    # 3. Encrypt any credential still stored in the clear by an earlier version.
+    #    After the ALTER TABLEs above, so newly-added columns are covered too.
+    migrate_plaintext_secrets(db_path)
+
+    # 4. Default Row Initialization
     db = SessionLocal()
     if not db.query(Config).first():
         default_config = Config()

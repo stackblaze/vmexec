@@ -131,6 +131,17 @@
                 </div>
                 <div v-if="cfg.backup_transport === 'nbd' || !cfg.backup_transport" class="col-span-2">
                   <span class="block mb-1 text-xs font-semibold uppercase text-muted">VDDK library path</span><input v-model="cfg.vddk_libdir" class="w-full py-1.5 px-3 text-sm font-mono" />
+                  <p class="mt-1.5 text-xs leading-relaxed text-muted">
+                    The VDDK is proprietary and cannot be shipped with VMExec, so you supply it once.
+                    Download the <strong>Linux 64-bit</strong> tarball
+                    (<code class="font-mono">VMware-vix-disklib-*.tar.gz</code>, v8 or v9) from
+                    <a href="https://developer.broadcom.com/sdks/vmware-virtual-disk-development-kit-vddk/latest"
+                       target="_blank" rel="noopener noreferrer"
+                       class="text-brand underline hover:no-underline">Broadcom</a>
+                    (free account required), drop it in <code class="font-mono">vendor/vddk/</code> on the
+                    server, and it installs automatically the next time a host is added.
+                    Until then, backups using this transport will fail.
+                  </p>
                 </div>
                 <div v-if="cfg.backup_transport === 'legacy'" class="col-span-2">
                   <span class="block mb-1 text-xs font-semibold uppercase text-muted">Disk estimate ×</span><input v-model.number="cfg.datastore_est_multiplier" type="number" min="1" max="3" step="0.1" class="w-full py-1.5 px-3 text-center text-sm" />
@@ -360,6 +371,15 @@
         >
           <p class="font-semibold mb-1">{{ hostAddResult.vddk_installed ? 'VDDK addon installed' : 'VDDK addon not installed' }}</p>
           <p class="text-xs leading-relaxed opacity-90">{{ hostAddResult.vddk_message || (hostAddResult.vddk_installed ? 'Live backup transport is set to VDDK / NBD.' : 'Place a VMware-vix-disklib tarball in vendor/vddk/ on the server, or install VDDK manually.') }}</p>
+          <p v-if="!hostAddResult.vddk_installed" class="mt-2 text-xs leading-relaxed opacity-90">
+            The VDDK is proprietary and cannot be shipped with VMExec. Download the
+            <strong>Linux 64-bit</strong> tarball (<code class="font-mono">VMware-vix-disklib-*.tar.gz</code>,
+            v8 or v9) from
+            <a href="https://developer.broadcom.com/sdks/vmware-virtual-disk-development-kit-vddk/latest"
+               target="_blank" rel="noopener noreferrer"
+               class="underline hover:no-underline">Broadcom</a>
+            (free account required) and place it in <code class="font-mono">vendor/vddk/</code> on the server.
+          </p>
         </div>
       </div>
       <form v-else class="space-y-3" @submit.prevent="submitAddHost">
@@ -374,7 +394,7 @@
           </div>
           <div>
             <span class="block mb-1 text-xs font-semibold uppercase text-muted">Username</span>
-            <input v-model="newHost.username" class="w-full py-2 px-3 text-sm" required autocomplete="username" :disabled="hostAddBusy" />
+            <input v-model="newHost.username" placeholder="administrator@vsphere.local" class="w-full py-2 px-3 text-sm" required autocomplete="off" spellcheck="false" :disabled="hostAddBusy" />
           </div>
           <div>
             <span class="block mb-1 text-xs font-semibold uppercase text-muted">Password</span>

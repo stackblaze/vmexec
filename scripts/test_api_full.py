@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Full API v1 integration test against a live NovaBak instance."""
+"""Full API v1 integration test against a live VMExec instance."""
 
 import argparse
 import json
@@ -88,7 +88,7 @@ def main():
     t = ApiTest(args.url, args.api_key)
     state = {}
 
-    print(f"Testing NovaBak API at {args.url}\n")
+    print(f"Testing VMExec API at {args.url}\n")
 
     # ── Docs / OpenAPI ───────────────────────────────────────────────────────
     def test_openapi():

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create a NovaBak API key for automation."""
+"""Create a VMExec API key for automation."""
 
 import argparse
 import sys
@@ -12,7 +12,7 @@ import auth
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Create a NovaBak API key")
+    parser = argparse.ArgumentParser(description="Create a VMExec API key")
     parser.add_argument("--name", default="automation", help="Key label")
     parser.add_argument("--username", default="admin", help="User to attach key to")
     args = parser.parse_args()

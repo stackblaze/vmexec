@@ -1,7 +1,9 @@
 import ssl
+import socket
 import atexit
-import urllib3
 import datetime
+import urllib3
+from urllib.parse import urlparse
 from pyVim.connect import SmartConnect, Disconnect
 from pyVmomi import vim
 from logger_util import log_info, log_warn, log_error
@@ -12,19 +14,100 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import vsphere_context
 
 
-def connect_esxi(host, user, pwd):
+class VSphereConnectionError(Exception):
+    """A connection or authentication failure with a reason a human can act on."""
+
+
+def split_host_port(raw):
     """
-    Connects to the ESXi host and returns the service instance.
+    Accept what people actually paste and return (host, port).
+
+    SmartConnect wants a BARE hostname. Given "https://vc.example.com/" it looks
+    up a host literally named "https://vc.example.com/", fails DNS, and the caller
+    sees a generic connection error that says nothing about the real cause. A
+    stray scheme or trailing slash is by far the most common way to register a
+    host that "cannot connect" while the server is perfectly reachable.
     """
+    if not raw:
+        return "", None
+    value = str(raw).strip()
+    if not value:
+        return "", None
+    # urlparse only populates .hostname/.port when there is a netloc to parse.
+    if "//" not in value:
+        value = "//" + value
+    try:
+        parsed = urlparse(value)
+        host = (parsed.hostname or "").strip()
+        port = parsed.port
+    except ValueError:
+        # e.g. a non-numeric port — fall back to the raw text minus decoration
+        return value.lstrip("/").split("/")[0], None
+    return host, port
+
+
+def normalize_host(raw):
+    """split_host_port() as a single string, for storing/displaying."""
+    host, port = split_host_port(raw)
+    if host and port:
+        return f"{host}:{port}"
+    return host
+
+
+def describe_connect_failure(host, exc, port=None):
+    """Turn a pyVmomi/socket exception into something worth showing a user."""
+    target = f"{host}:{port}" if port else host
+    if isinstance(exc, vim.fault.InvalidLogin):
+        return f"Incorrect username or password for {target}."
+    if isinstance(exc, vim.fault.NoPermission):
+        return f"That account has no permission to log in to {target}."
+    if isinstance(exc, socket.gaierror):
+        return (f"'{host}' could not be resolved. Enter a bare hostname or IP "
+                f"(no https:// prefix and no trailing slash).")
+    if isinstance(exc, (socket.timeout, TimeoutError)):
+        return f"Timed out connecting to {target}. Check routing and firewalls."
+    if isinstance(exc, ConnectionRefusedError):
+        return f"Connection refused by {target}. Is it listening on that port?"
+    if isinstance(exc, ssl.SSLError):
+        return f"TLS handshake with {target} failed: {exc}"
+    return f"Could not connect to {target}: {exc}"
+
+
+def connect_esxi(host, user, pwd, raise_on_error=False):
+    """
+    Connects to the ESXi/vCenter host and returns the service instance.
+
+    Returns None on failure by default, which is the contract every existing
+    caller relies on. Pass raise_on_error=True to get a VSphereConnectionError
+    carrying the actual reason instead — callers that surface errors to a user
+    want to distinguish "wrong password" from "no such host".
+    """
+    host_clean, port = split_host_port(host)
+    if not host_clean:
+        reason = "No host address was provided."
+        log_error(f"[ESXI] {reason}")
+        if raise_on_error:
+            raise VSphereConnectionError(reason)
+        return None
+    cleaned = normalize_host(host)
+    if cleaned != str(host).strip():
+        log_info(f"[ESXI] Normalized host {str(host).strip()!r} -> {cleaned!r}")
+
     context = ssl._create_unverified_context() # Ignore self-signed certs
     try:
-        log_info(f"[ESXI] Connecting to {host}...")
-        si = SmartConnect(host=host, user=user, pwd=pwd, sslContext=context)
-        log_info(f"[ESXI] Connected successfully to {host}")
+        log_info(f"[ESXI] Connecting to {host_clean}...")
+        kwargs = {"host": host_clean, "user": user, "pwd": pwd, "sslContext": context}
+        if port:
+            kwargs["port"] = port
+        si = SmartConnect(**kwargs)
+        log_info(f"[ESXI] Connected successfully to {host_clean}")
         atexit.register(Disconnect, si)
         return si
     except Exception as e:
-        print(f"Failed to connect to ESXi: {e}")
+        reason = describe_connect_failure(host_clean, e, port)
+        log_error(f"[ESXI] {reason}")
+        if raise_on_error:
+            raise VSphereConnectionError(reason) from e
         return None
 
 def get_all_vms(si):
@@ -46,6 +129,20 @@ def get_all_vms(si):
     vm_list = []
     
     for child in children:
+        summary_config = child.summary.config if child.summary else None
+        # vSphere templates are VirtualMachine objects too. They cannot be
+        # powered on or snapshotted, so offering them as backup candidates only
+        # clutters the inventory with rows that could never produce a backup.
+        if summary_config is None or getattr(summary_config, "template", False):
+            continue
+        # vCLS agent VMs (vSphere Cluster Services) are owned by vCenter's EAM:
+        # auto-created, auto-recreated, and VMware explicitly says never to back
+        # up or snapshot them. Unconditional, unlike the exclude_infra_vms
+        # setting, which also matches names like "vcenter" that ARE legitimate
+        # backup targets. VMware names them "vCLS-<uuid>" (older builds "vCLS (n)").
+        name = getattr(summary_config, "name", "") or ""
+        if name == "vCLS" or name.startswith("vCLS-") or name.startswith("vCLS "):
+            continue
         vm_list.append({
             "name": child.summary.config.name,
             "power_state": child.summary.runtime.powerState,

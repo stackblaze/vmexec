@@ -29,9 +29,11 @@ def _generate_cert():
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
     # Certificate subject
+    # No country and no third-party organisation name: this is a self-signed
+    # cert for an appliance the operator runs, and the previous values named an
+    # unrelated company on every deployment.
     subject = issuer = x509.Name([
-        x509.NameAttribute(NameOID.COUNTRY_NAME, "IL"),
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "THIS Cyber Security"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "VMExec"),
         x509.NameAttribute(NameOID.COMMON_NAME, "VMExec"),
     ])
 
@@ -47,7 +49,7 @@ def _generate_cert():
         .add_extension(
             x509.SubjectAlternativeName([
                 x509.DNSName("localhost"),
-                x509.DNSName("novabak"),
+                x509.DNSName("vmexec"),
                 x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")),
             ]),
             critical=False,

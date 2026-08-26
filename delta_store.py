@@ -1,5 +1,8 @@
 """
-delta_store.py — NovaBak incremental delta file format (NVBD1)
+delta_store.py — VMExec incremental delta file format (NVBD1)
+
+The on-disk magic stays b'NVBD' (NovaBak-era): it is written into every delta
+file ever produced, and changing it would make existing incrementals unreadable.
 
 Binary layout:
   magic     4 bytes  b'NVBD'

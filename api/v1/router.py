@@ -327,8 +327,20 @@ def update_profile(
 @router.get("/hosts", response_model=List[ESXiHostResponse])
 def list_hosts(db: Session = Depends(get_db), user: User = Depends(get_api_user)):
     from models import ESXiHost
+    from services.vddk_install import is_vddk_installed, get_vddk_libdir
+
     hosts = db.query(ESXiHost).all()
-    return [ESXiHostResponse(**backup_ops.host_to_dict(h)) for h in hosts]
+    # Live state, not the add-time snapshot: vddk_installed was previously only
+    # present on the add-host response, so any UI reading the list could not
+    # tell whether backups would actually work.
+    config = backup_ops.get_or_create_config(db)
+    vddk_ok = is_vddk_installed(get_vddk_libdir(config))
+    out = []
+    for h in hosts:
+        d = backup_ops.host_to_dict(h)
+        d["vddk_installed"] = vddk_ok
+        out.append(ESXiHostResponse(**d))
+    return out
 
 
 @router.post("/hosts", response_model=ESXiHostResponse, status_code=201)
@@ -422,7 +434,11 @@ def apply_inventory(
     if not body.updates and not body.restagger:
         return {"ok": True, "staggered": False, "selected_count": 0}
     updates = [u.model_dump() for u in body.updates]
-    return backup_ops.apply_inventory_selections(db, updates, restagger=body.restagger)
+    return backup_ops.apply_inventory_selections(
+        db, updates, restagger=body.restagger,
+        base_hour=body.base_hour, base_minute=body.base_minute,
+        interval_minutes=body.interval_minutes,
+    )
 
 
 @router.post("/vms/{vm_id}/run")

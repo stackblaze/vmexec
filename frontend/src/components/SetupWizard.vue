@@ -67,20 +67,37 @@
             <div class="flex flex-col min-h-full">
               <h3 class="font-semibold text-base mb-1">ESXi / vCenter</h3>
               <p class="text-sm mb-4 text-muted">Register a standalone ESXi host or vCenter Server.</p>
-              <div class="flex flex-wrap items-end gap-2 mb-4">
-                <div class="flex-1 min-w-[5rem]"><span class="block text-xs font-semibold uppercase text-muted mb-1">Alias</span><input v-model="newHost.name" class="w-full py-2 px-3 text-sm mt-1" /></div>
-                <div class="flex-[1.4] min-w-[7rem]"><span class="block text-xs font-semibold uppercase text-muted mb-1">IP / FQDN</span><input v-model="newHost.host_ip" class="w-full py-2 px-3 font-mono text-sm mt-1" /></div>
-                <div class="w-24"><span class="block text-xs font-semibold uppercase text-muted mb-1">User</span><input v-model="newHost.username" class="w-full py-2 px-3 text-sm mt-1" /></div>
-                <div class="w-28"><span class="block text-xs font-semibold uppercase text-muted mb-1">Password</span><input v-model="newHost.password" type="password" class="w-full py-2 px-3 text-sm mt-1" /></div>
-                <div class="w-36">
+              <div class="grid grid-cols-1 sm:grid-cols-12 gap-3 mb-4">
+                <div class="sm:col-span-4">
+                  <span class="block text-xs font-semibold uppercase text-muted mb-1">Alias</span>
+                  <input v-model="newHost.name" placeholder="e.g. vcenter-prod" class="w-full py-2 px-3 text-sm mt-1" autocomplete="off" :disabled="hostAddBusy" />
+                </div>
+                <div class="sm:col-span-8">
+                  <span class="block text-xs font-semibold uppercase text-muted mb-1">IP / FQDN</span>
+                  <input v-model="newHost.host_ip" placeholder="10.0.0.50 or vcenter.example.com" class="w-full py-2 px-3 font-mono text-sm mt-1" autocomplete="off" spellcheck="false" :disabled="hostAddBusy" />
+                </div>
+                <div class="sm:col-span-5">
+                  <span class="block text-xs font-semibold uppercase text-muted mb-1">User</span>
+                  <input v-model="newHost.username" placeholder="administrator@vsphere.local" class="w-full py-2 px-3 text-sm mt-1" autocomplete="off" spellcheck="false" :disabled="hostAddBusy" />
+                </div>
+                <div class="sm:col-span-4">
+                  <span class="block text-xs font-semibold uppercase text-muted mb-1">Password</span>
+                  <input v-model="newHost.password" type="password" class="w-full py-2 px-3 text-sm mt-1" autocomplete="new-password" :disabled="hostAddBusy" />
+                </div>
+                <div class="sm:col-span-3">
                   <span class="block text-xs font-semibold uppercase text-muted mb-1">Connection</span>
-                  <select v-model="newHost.connection_type" class="w-full py-2 px-3 text-sm mt-1">
+                  <select v-model="newHost.connection_type" class="w-full py-2 px-3 text-sm mt-1" :disabled="hostAddBusy">
                     <option value="auto">Auto-detect</option>
                     <option value="standalone">Standalone ESXi</option>
                     <option value="vcenter">vCenter Server</option>
                   </select>
                 </div>
-                <button type="button" class="inline-flex items-center justify-center gap-1.5 rounded-md border border-btn-sec-border bg-btn-sec px-4 py-2 text-sm font-medium text-btn-sec-text hover:bg-btn-sec-hover transition-[background-color] duration-200" @click="addHost">Add Host</button>
+                <div class="sm:col-span-12 flex justify-end">
+                  <button type="button" class="inline-flex items-center justify-center gap-1.5 rounded-md border border-btn-sec-border bg-btn-sec px-4 py-2 text-sm font-medium text-btn-sec-text hover:bg-btn-sec-hover transition-[background-color] duration-200 disabled:opacity-60 disabled:cursor-not-allowed" :disabled="hostAddBusy" @click="addHost">
+                    <span v-if="hostAddBusy" class="inline-block h-3.5 w-3.5 rounded-full border-2 border-current border-r-transparent animate-spin" aria-hidden="true"></span>
+                    {{ hostAddBusy ? 'Connecting…' : 'Add Host' }}
+                  </button>
+                </div>
               </div>
               <div class="rounded-lg border border-border bg-card shadow-card transition-all duration-300 overflow-hidden flex-1 min-h-0 overflow-y-auto">
                 <div class="px-4 py-2.5 border-b border-border font-semibold text-sm bg-nav">Registered Hosts</div>
@@ -104,10 +121,9 @@
               <div class="flex flex-wrap justify-between items-start gap-3 mb-4">
                 <div>
                   <h3 class="font-semibold text-base mb-1">Select VMs to protect</h3>
-                  <p class="text-sm text-muted">Recommended excludes templates, vCLS, and this backup server.</p>
+                  <p class="text-sm text-muted">Templates and vCLS agent VMs are excluded automatically; this backup server is deselected by default.</p>
                 </div>
                 <div class="flex gap-2">
-                  <button type="button" class="inline-flex items-center justify-center gap-1.5 rounded-md border border-btn-sec-border bg-btn-sec px-3 py-1.5 text-xs font-medium text-btn-sec-text hover:bg-btn-sec-hover transition-[background-color] duration-200" @click="selectRecommended">Recommended</button>
                   <button type="button" class="inline-flex items-center justify-center gap-1.5 rounded-md border border-btn-sec-border bg-btn-sec px-3 py-1.5 text-xs font-medium text-btn-sec-text hover:bg-btn-sec-hover transition-[background-color] duration-200" @click="selectAllVms(true)">All</button>
                   <button type="button" class="inline-flex items-center justify-center gap-1.5 rounded-md border border-btn-sec-border bg-btn-sec px-3 py-1.5 text-xs font-medium text-btn-sec-text hover:bg-btn-sec-hover transition-[background-color] duration-200" @click="selectAllVms(false)">None</button>
                 </div>
@@ -157,10 +173,28 @@
                 <div class="flex flex-col items-center"><span class="block text-xs font-semibold uppercase text-muted mb-1">Active</span><input v-model="schedule.active" type="checkbox" class="mt-2" /></div>
               </div>
               <label class="flex items-center gap-2 text-sm cursor-pointer">
-                <input v-model="schedule.stagger" type="checkbox" /> Stagger start times per host
+                <input v-model="schedule.stagger" type="checkbox" /> Stagger start times (spreads VMs across the day so they don't all fire at once)
               </label>
+              <div v-if="schedule.stagger" class="mt-2 ml-6">
+                <span class="block text-xs font-semibold uppercase text-muted mb-1">Gap between jobs (minutes)</span>
+                <input v-model.number="schedule.staggerInterval" type="number" min="5" max="180" step="5" class="w-28 py-2 px-3 text-sm" />
+              </div>
               <div v-if="storageType !== 'S3'" class="pt-2 border-t border-dashed border-border">
                 <label class="flex items-center gap-2 text-sm"><input v-model="schedule.cbt" type="checkbox" /> Enable incremental (CBT)</label>
+                <div v-if="schedule.cbt && needsVddk" class="mt-2 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2.5 text-amber-400 text-xs leading-relaxed">
+                  <p class="font-semibold mb-0.5">Incremental backups need the VMware VDDK, which is not installed yet</p>
+                  <p class="opacity-90">
+                    CBT streams changed blocks through VMware's VDDK. It is proprietary software,
+                    not open source, and cannot be redistributed with VMExec — download it directly
+                    from
+                    <a href="https://developer.broadcom.com/sdks/vmware-virtual-disk-development-kit-vddk/latest"
+                       target="_blank" rel="noopener noreferrer" class="underline hover:no-underline">Broadcom</a>
+                    (free developer account), then place the <strong>Linux 64-bit</strong>
+                    <code class="font-mono">VMware-vix-disklib-*.tar.gz</code> in
+                    <code class="font-mono">vendor/vddk/</code> on the server — it installs automatically.
+                    You can finish setup now; jobs will fail until it is in place.
+                  </p>
+                </div>
                 <div class="mt-2"><span class="block text-xs font-semibold uppercase text-muted mb-1">Full every N runs</span><input v-model.number="schedule.cbtInterval" type="number" min="1" max="60" class="w-24 px-2 py-1 text-center text-sm ml-2" /></div>
               </div>
             </div>
@@ -168,9 +202,41 @@
 
           <!-- Step 5: Complete -->
           <div v-show="step === 5" class="absolute inset-0 overflow-y-auto px-8 py-6">
-            <h3 class="font-semibold text-base mb-2">Setup complete</h3>
+            <h3 class="font-semibold text-base mb-1">Setup complete</h3>
             <p class="text-sm mb-4 text-muted">{{ summary }}</p>
-            <p class="text-sm">Your VMs are configured for scheduled backups. You can fine-tune schedules on the Backup tab.</p>
+
+            <div class="rounded-lg border border-border bg-card shadow-card max-w-2xl divide-y divide-border text-sm">
+              <div class="px-4 py-3 flex justify-between gap-4">
+                <span class="text-muted">Backup storage</span>
+                <span class="font-mono text-right">{{ completeSummary.storage }}</span>
+              </div>
+              <div class="px-4 py-3 flex justify-between gap-4">
+                <span class="text-muted">{{ hosts.length === 1 ? 'Host' : 'Hosts' }}</span>
+                <span class="text-right">{{ completeSummary.hosts }}</span>
+              </div>
+              <div class="px-4 py-3 flex justify-between gap-4">
+                <span class="text-muted">Protected VMs</span>
+                <span class="text-right">{{ completeSummary.vms }}</span>
+              </div>
+              <div class="px-4 py-3 flex justify-between gap-4">
+                <span class="text-muted">Schedule</span>
+                <span class="text-right">{{ completeSummary.schedule }}</span>
+              </div>
+              <div v-if="completeSummary.window" class="px-4 py-3 flex justify-between gap-4">
+                <span class="text-muted">Backup window</span>
+                <span class="font-mono text-right">{{ completeSummary.window }}</span>
+              </div>
+              <div class="px-4 py-3 flex justify-between gap-4">
+                <span class="text-muted">Incremental</span>
+                <span class="text-right">{{ completeSummary.cbt }}</span>
+              </div>
+              <div class="px-4 py-3 flex justify-between gap-4">
+                <span class="text-muted">Retention</span>
+                <span class="text-right">keep {{ schedule.retention }} restore points per VM</span>
+              </div>
+            </div>
+
+            <p class="text-sm mt-4 text-muted">Fine-tune any VM's schedule on the Backup tab.</p>
           </div>
         </div>
       </div>
@@ -208,9 +274,39 @@ const summary = ref('')
 const storageType = ref('NFS')
 const storage = reactive({ smb_unc_path: '', smb_user: '', smb_password: '', nfs_path: '/mnt/backups', s3_endpoint: '', s3_access_key: '', s3_secret_key: '', s3_bucket: '', s3_region: '' })
 const hosts = ref([])
+const hostAddBusy = ref(false)
+// The API reports VDDK state per host-add. Surface it rather than discarding it.
+const needsVddk = computed(() => hosts.value.some((h) => h.vddk_installed === false))
+
+const DAY_NAMES = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su']
+const completeSummary = computed(() => {
+  const pad = (n) => String(n).padStart(2, '0')
+  const count = vms.value.filter((v) => v._selected).length
+  const interval = schedule.stagger ? (schedule.staggerInterval || 30) : 0
+  const start = schedule.hour * 60 + schedule.minute
+  const end = start + Math.max(0, count - 1) * interval
+  const fmt = (m) => `${pad(Math.floor(m / 60) % 24)}:${pad(m % 60)}`
+  const freq = schedule.frequency === 'daily'
+    ? 'Daily'
+    : `Weekly (${schedule.days.map((d) => DAY_NAMES[+d]).join(', ')})`
+  return {
+    storage: storageType.value === 'S3'
+      ? `S3 · ${storage.s3_bucket}`
+      : `${storageType.value} · ${storageType.value === 'NFS' ? storage.nfs_path : storage.smb_unc_path}`,
+    hosts: hosts.value.map((h) => `${h.name} (${h.host_ip})`).join(', ') || '—',
+    vms: `${count} selected`,
+    schedule: `${freq} from ${fmt(start)}`
+      + (schedule.stagger && count > 1 ? `, one VM every ${interval} min` : '')
+      + (schedule.active ? '' : ' (jobs created inactive)'),
+    window: schedule.stagger && count > 1 ? `${fmt(start)} – ${fmt(end)}` : '',
+    cbt: (storageType.value !== 'S3' && schedule.cbt)
+      ? `CBT on, full backup every ${schedule.cbtInterval} runs`
+      : 'off — every run is a full backup',
+  }
+})
 const vms = ref([])
 const newHost = reactive({ name: '', host_ip: '', username: 'root', password: '', connection_type: 'auto' })
-const schedule = reactive({ frequency: 'daily', days: ['0','1','2','3','4'], hour: 2, minute: 0, retention: 7, active: true, stagger: true, cbt: true, cbtInterval: 7 })
+const schedule = reactive({ frequency: 'daily', days: ['0','1','2','3','4'], hour: 2, minute: 0, retention: 7, active: true, stagger: true, staggerInterval: 30, cbt: true, cbtInterval: 7 })
 const dayLabels = [{ num: 0, lbl: 'Mo' }, { num: 1, lbl: 'Tu' }, { num: 2, lbl: 'We' }, { num: 3, lbl: 'Th' }, { num: 4, lbl: 'Fr' }, { num: 5, lbl: 'Sa' }, { num: 6, lbl: 'Su' }]
 
 const storageStatusStyle = computed(() => ({
@@ -272,14 +368,24 @@ function storagePayload() {
 }
 
 async function addHost() {
+  if (hostAddBusy.value) return
   error.value = ''
   if (!newHost.name || !newHost.host_ip || !newHost.username || !newHost.password) {
     error.value = 'Fill in alias, host, username, and password.'
     return
   }
-  const host = await hostsApi.create({ ...newHost })
-  if (!hosts.value.some((h) => h.id === host.id)) hosts.value.push(host)
-  newHost.password = ''
+  // Without this try/catch the rejection is unhandled: the request fails, the
+  // reason only ever reaches the devtools console, and the wizard looks idle.
+  hostAddBusy.value = true
+  try {
+    const host = await hostsApi.create({ ...newHost })
+    if (!hosts.value.some((h) => h.id === host.id)) hosts.value.push(host)
+    newHost.password = ''
+  } catch (e) {
+    error.value = e.message || 'Could not add host.'
+  } finally {
+    hostAddBusy.value = false
+  }
 }
 
 async function deleteHost(h) {
@@ -287,10 +393,6 @@ async function deleteHost(h) {
   if (!ok) return
   await hostsApi.remove(h.id)
   hosts.value = hosts.value.filter((x) => x.id !== h.id)
-}
-
-function selectRecommended() {
-  vms.value.forEach((v) => { v._selected = shouldProtectVm(v.vm_name) })
 }
 
 function selectAllVms(on) {
@@ -324,7 +426,16 @@ async function next() {
       }
       if (warnings.length === hosts.value.length) throw new Error('Could not discover VMs from any host.')
       const list = await jobsApi.vms()
-      vms.value = list.map((v) => ({ ...v, _selected: shouldProtectVm(v.vm_name) }))
+      // If a selection already exists on the server, SHOW IT. Re-deriving ticks
+      // from a name heuristic every visit meant re-opening the wizard silently
+      // proposed a different selection than the one actually running, and
+      // finishing it overwrote a working schedule. The heuristic is only a
+      // first-run default now.
+      const hasExisting = list.some((v) => v.is_selected)
+      vms.value = list.map((v) => ({
+        ...v,
+        _selected: hasExisting ? !!v.is_selected : shouldProtectVm(v.vm_name),
+      }))
       step.value = 3
       if (warnings.length) error.value = 'Some hosts could not be synced: ' + warnings.join('; ')
     } else if (step.value === 3) {
@@ -346,29 +457,44 @@ async function applySchedule() {
   const days = schedule.frequency === 'daily' ? '0,1,2,3,4,5,6' : (schedule.days.length ? schedule.days.join(',') : '0,1,2,3,4,5,6')
   if (schedule.frequency === 'weekly' && !schedule.days.length) throw new Error('Pick at least one day for a weekly schedule.')
 
-  const hostIds = [...new Set(selected.map((v) => v.esxi_host_id).filter(Boolean))].sort((a, b) => a - b)
-  const hostHour = {}
-  hostIds.forEach((hid, i) => { hostHour[hid] = (schedule.hour + (schedule.stagger ? i : 0)) % 24 })
-
   const cbtEnabled = storageType.value !== 'S3' && schedule.cbt
   await configApi.update({ cbt_enabled: cbtEnabled, cbt_full_interval: schedule.cbtInterval })
 
+  // Write ONLY what changed. This loop used to PATCH every row it knew about,
+  // so finishing the wizard from a page with nothing ticked (a stale tab, or a
+  // click on "None") blanket-deselected every scheduled job in the database.
+  // A deselect is now sent only for rows the SERVER currently has selected.
   let updated = 0
+  let deselected = 0
   for (const v of vms.value) {
-    const body = v._selected ? {
-      is_selected: true,
-      is_job_active: schedule.active,
-      schedule_hour: hostHour[v.esxi_host_id] ?? schedule.hour,
-      schedule_minute: schedule.minute,
-      retention_count: schedule.retention,
-      schedule_frequency: schedule.frequency,
-      schedule_days: days,
-      power_off_for_backup: false,
-      cbt_enabled: cbtEnabled,
-    } : { is_selected: false, is_job_active: false }
-    await jobsApi.patch(v.id, body)
-    if (v._selected) updated++
+    if (v._selected) {
+      await jobsApi.patch(v.id, {
+        is_selected: true,
+        is_job_active: schedule.active,
+        schedule_hour: schedule.hour,
+        schedule_minute: schedule.minute,
+        retention_count: schedule.retention,
+        schedule_frequency: schedule.frequency,
+        schedule_days: days,
+        power_off_for_backup: false,
+        cbt_enabled: cbtEnabled,
+      })
+      updated++
+    } else if (v.is_selected) {
+      await jobsApi.patch(v.id, { is_selected: false, is_job_active: false })
+      deselected++
+    }
   }
-  summary.value = `Configured ${updated} VM(s) for scheduled backups.`
+  // The old per-host hour offset was a no-op in the common case of a single
+  // registered vCenter: every VM shares one host, so nothing staggered and all
+  // jobs fired at the same minute. Use the backend's per-VM stagger, which
+  // spreads jobs at max_schedules_per_hour anchored at the chosen start time.
+  if (schedule.stagger && updated > 0) {
+    await jobsApi.inventoryApply({ updates: [], restagger: true, base_hour: schedule.hour, base_minute: schedule.minute, interval_minutes: schedule.staggerInterval || 30 })
+  }
+  summary.value = `Configured ${updated} VM(s) for scheduled backups`
+    + (deselected ? `, removed ${deselected} from the schedule` : '')
+    + (schedule.stagger && updated > 1 ? ', start times staggered' : '') + '.'
+
 }
 </script>

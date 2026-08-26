@@ -1,18 +1,21 @@
-version: "3.9"
-
+# ─── Web UI ───────────────────────────────────────────────────────────────
 services:
-  # ─── Web UI ───────────────────────────────────────────────────────────────
   web:
     build: .
-    container_name: novabak_web
+    container_name: vmexec_web
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8000:8000"  # Caddy reverse-proxies :443 → here
+      # Defaults to loopback for deployments that put a reverse proxy in front.
+      # The app terminates its own TLS, so if you reach it directly instead,
+      # set VMEXEC_BIND=0.0.0.0 rather than editing this file.
+      - "${VMEXEC_BIND:-127.0.0.1}:8000:8000"
     volumes:
-      # Persistent data: SQLite DB + logs
+      # Persistent data: SQLite DB, TLS cert, credential encryption key, logs.
       - novabak_data:/app/data
-      - /mnt/backups:/mnt/backups
-      - /opt/NovaBak/vendor/vddk:/app/vendor/vddk:ro
+      - ${VMEXEC_BACKUP_DIR:-/mnt/backups}:/mnt/backups
+      # VDDK tarball, supplied by the operator: proprietary and not
+      # redistributable, so it is never in the image. See scripts/install-vddk.sh.
+      - ./vendor/vddk:/app/vendor/vddk:ro
     environment:
       - DATA_DIR=/app/data
       - LOG_FILE=service.log
@@ -21,22 +24,24 @@ services:
   # ─── Background Worker Daemon ─────────────────────────────────────────────
   worker:
     build: .
-    container_name: novabak_worker
+    container_name: vmexec_worker
     restart: unless-stopped
     depends_on:
       - web
     volumes:
       # Same data volume — shared DB between web and worker
       - novabak_data:/app/data
-      - /mnt/backups:/mnt/backups
-      # VDDK tarball + extracted lib (see services/vddk_install.py)
-      - /opt/NovaBak/vendor/vddk:/app/vendor/vddk:ro
+      - ${VMEXEC_BACKUP_DIR:-/mnt/backups}:/mnt/backups
+      - ./vendor/vddk:/app/vendor/vddk:ro
     environment:
       - DATA_DIR=/app/data
       - LOG_FILE=worker.log
     command: python -u worker_daemon.py
 
 volumes:
+  # NAME DELIBERATELY UNCHANGED. Renaming it to vmexec_data would leave every
+  # existing deployment's database behind in an orphaned volume and start from
+  # an empty one — silent data loss on upgrade. The container names above are
+  # safe to rename because containers are recreated, not migrated.
   novabak_data:
     driver: local
-

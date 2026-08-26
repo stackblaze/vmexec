@@ -408,7 +408,7 @@ def export_live_nfc(
             if is_cancelled_func and is_cancelled_func():
                 return False, "Backup cancelled by user"
 
-            # Map stream export to NovaBak flat + descriptor naming
+            # Map stream export to the flat + descriptor naming used by the repo layout
             if disk_idx < len(disk_descriptors):
                 disk_base = os.path.basename(disk_descriptors[disk_idx]["rel_path"])
             else:

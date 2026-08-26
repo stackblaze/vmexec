@@ -58,7 +58,7 @@ def _smtp_send(config, to_addrs: list, subject: str, body: str):
         return
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = config.smtp_user if config.smtp_user else "novabak@local"
+    msg["From"] = config.smtp_user if config.smtp_user else "vmexec@local"
     msg["To"] = ", ".join(to_addrs)
     msg.set_content(body)
     try:
