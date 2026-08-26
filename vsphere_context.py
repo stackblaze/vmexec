@@ -200,3 +200,21 @@ def build_nbdkit_vddk_cmd(
         if cookie:
             cmd.insert(-1, f"cookie={cookie}")
     return cmd, conn_type
+
+def count_vm_snapshots(vm):
+    """Total snapshots on a VM, walking the whole tree.
+
+    The VDDK-free incremental path depends on this: with exactly ONE snapshot
+    (the backup's own), the pre-snapshot top of chain is the base disk, whose
+    -flat file is frozen while the snapshot exists and can therefore be read
+    with plain datastore HTTP range requests. With any other snapshot present,
+    the top of chain is a delta and a -flat read would return stale data.
+    """
+    def _walk(nodes):
+        total = 0
+        for node in nodes or []:
+            total += 1 + _walk(getattr(node, "childSnapshotList", None))
+        return total
+
+    snap = getattr(vm, "snapshot", None)
+    return _walk(getattr(snap, "rootSnapshotList", None)) if snap else 0

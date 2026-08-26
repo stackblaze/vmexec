@@ -82,6 +82,19 @@ def export_cbt_backup(
         return False, f"No disks found for {vm_name}", None
 
     is_off = getattr(vm.runtime, "powerState", "poweredOff") == "poweredOff"
+
+    if not take_full and not is_off:
+        import vddk_transport
+        if not vddk_transport.is_available(config) and vsphere_context.count_vm_snapshots(vm) > 0:
+            log_info(
+                "[CBT] VM carries pre-existing snapshots and VDDK is unavailable; "
+                "the HTTP incremental path would read stale data — forcing full "
+                "(streams via NFC)"
+            )
+            take_full = True
+            backup_type = "full"
+            parent_id = None
+
     snap_obj = None
     snap_name = None
 
@@ -308,6 +321,43 @@ def _resolve_local(storage, rel_path):
     return None
 
 
+# Upper bound per HTTP range request on the VDDK-free incremental path. CBT can
+# report very large contiguous dirty areas (a fresh full has one the size of
+# the disk); unbounded requests would buffer the whole area in one response.
+HTTP_EXTENT_CHUNK = 64 * 1024 * 1024
+
+
+def _read_extents_http_frozen_base(
+    si, vm, disk, areas, download_http_range_func, connection_type, is_cancelled_func,
+):
+    """Read changed areas of a LIVE VM without VDDK.
+
+    Valid only while the backup snapshot is the VM's sole snapshot: the base
+    disk's -flat file is then frozen (all guest writes go to the snapshot
+    delta), so ranged datastore HTTP reads against it return the exact
+    point-in-time data the snapshot captured — the same mechanism the
+    powered-off path has always used. The caller enforces the guard.
+    """
+    extents = []
+    for start, length in areas:
+        offset, remaining = int(start), int(length)
+        while remaining > 0:
+            if is_cancelled_func and is_cancelled_func():
+                raise RuntimeError("Backup cancelled by user")
+            chunk = min(remaining, HTTP_EXTENT_CHUNK)
+            data = _read_range_http(
+                si, disk, offset, chunk, download_http_range_func, vm, connection_type,
+            )
+            if not data:
+                raise RuntimeError(
+                    f"Empty HTTP range read at offset {offset} of {disk['rel_path']}"
+                )
+            extents.append((offset, data))
+            offset += len(data)
+            remaining -= len(data)
+    return extents
+
+
 def _capture_changed_extents(
     si, vm, snap_obj, disk, areas, is_off,
     host_ip, host_user, host_password, storage, config,
@@ -331,9 +381,40 @@ def _capture_changed_extents(
     if is_cancelled_func and is_cancelled_func():
         raise RuntimeError("Backup cancelled by user")
     filtered = [(int(s), int(l)) for s, l in areas if int(l) > 0]
-    return vddk_transport.read_snapshot_extents(
-        si, vm, snap_obj, disk, filtered,
-        host_ip, host_user, host_password, config, connection_type,
+    single_snapshot = vsphere_context.count_vm_snapshots(vm) == 1
+    if vddk_transport.is_available(config):
+        try:
+            return vddk_transport.read_snapshot_extents(
+                si, vm, snap_obj, disk, filtered,
+                host_ip, host_user, host_password, config, connection_type,
+            )
+        except Exception as vddk_err:
+            # An installed VDDK can still fail at runtime — a version outside
+            # the vSphere support matrix (e.g. VDDK 9.x against vCenter 7),
+            # missing transport, thumbprint drift. When the chain is provably
+            # safe, degrade to the HTTP path instead of failing the backup.
+            if not single_snapshot:
+                raise
+            log_warn(
+                f"[CBT] VDDK extent read failed ({str(vddk_err)[:160]}); "
+                "falling back to datastore HTTP range reads (frozen base disk)"
+            )
+    # VDDK-free path. Safe only when our backup snapshot is the ONLY snapshot:
+    # then disk["rel_path"] (collected pre-snapshot) is the base disk and its
+    # -flat file is frozen for the snapshot's lifetime.
+    if single_snapshot:
+        log_info(
+            f"[CBT] VDDK unavailable; reading {len(filtered)} changed area(s) "
+            f"via datastore HTTP range requests (frozen base disk)"
+        )
+        return _read_extents_http_frozen_base(
+            si, vm, disk, filtered, download_http_range_func,
+            connection_type, is_cancelled_func,
+        )
+    raise RuntimeError(
+        "Incremental read needs VDDK when the VM has other snapshots: the top "
+        "of the disk chain is a delta, so a -flat range read would return "
+        "stale data. Remove pre-existing snapshots or install VDDK."
     )
 
 

@@ -128,6 +128,29 @@ def install_vddk_from_tarball(tarball_path, libdir=None):
         shutil.move(distrib, libdir)
         shutil.rmtree(tmp, ignore_errors=True)
 
+        # nbdkit's vddk plugin dlopens a VERSIONED soname, and older plugins
+        # (including Debian bookworm's 1.42 era) only know libvixDiskLib.so.8.
+        # VDDK 9.x ships .so.9* only, so the plugin reported "cannot open
+        # shared object file" and VDDK looked broken while being perfectly
+        # healthy. Provide the compat names; verified live that the v9 library
+        # serves the v8-era plugin ABI (nbdinfo + full backup on vSphere 7.0.3).
+        for sub in ("lib64", "lib32"):
+            libd = os.path.join(libdir, sub)
+            if not os.path.isdir(libd):
+                continue
+            real = sorted(
+                p for p in glob.glob(os.path.join(libd, "libvixDiskLib.so.*"))
+                if not os.path.islink(p)
+            )
+            if not real:
+                continue
+            newest = os.path.basename(real[-1])
+            for compat in ("libvixDiskLib.so.8", "libvixDiskLib.so"):
+                path = os.path.join(libd, compat)
+                if not os.path.exists(path):
+                    os.symlink(newest, path)
+                    log_info(f"[VDDK] Compat symlink {compat} -> {newest}")
+
         parsed = parse_vddk_version(tarball_path)
         version = ".".join(str(n) for n in parsed) if parsed else "unknown version"
         log_info(f"[VDDK] Installed version {version} at {libdir}")

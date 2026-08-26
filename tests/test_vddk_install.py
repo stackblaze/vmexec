@@ -115,6 +115,25 @@ class TestInstallFromTarball(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("libvixDiskLib.so", msg)
 
+    def test_soname_compat_symlink_created_for_v9(self):
+        # nbdkit plugins that only know libvixDiskLib.so.8 must still load a
+        # v9-only VDDK — the failure mode was "cannot open shared object file".
+        tarball = os.path.join(self.tmp.name, "VMware-vix-disklib-9.1.0.0-25379531.x86_64.tar.gz")
+        with tempfile.TemporaryDirectory() as staging:
+            target = os.path.join(staging, "vmware-vix-disklib-distrib", "lib64")
+            os.makedirs(target)
+            with open(os.path.join(target, "libvixDiskLib.so.9.1.0.0"), "wb") as fh:
+                fh.write(b"\x7fELF-not-really")
+            os.symlink("libvixDiskLib.so.9.1.0.0", os.path.join(target, "libvixDiskLib.so"))
+            with tarfile.open(tarball, "w:gz") as tf:
+                tf.add(os.path.join(staging, "vmware-vix-disklib-distrib"),
+                       arcname="vmware-vix-disklib-distrib")
+        ok, msg = vddk_install.install_vddk_from_tarball(tarball, self.libdir)
+        self.assertTrue(ok, msg)
+        compat = os.path.join(self.libdir, "lib64", "libvixDiskLib.so.8")
+        self.assertTrue(os.path.islink(compat))
+        self.assertEqual(os.readlink(compat), "libvixDiskLib.so.9.1.0.0")
+
     def test_is_vddk_installed_reflects_result(self):
         self.assertFalse(vddk_install.is_vddk_installed(self.libdir))
         self._install()
