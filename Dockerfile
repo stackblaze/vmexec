@@ -5,7 +5,13 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     nbdkit libnbd-dev \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
-RUN git clone --depth 1 https://gitlab.com/nbdkit/nbdkit.git \
+# Pinned, and pinned to MATCH THE RUNTIME: the plugin built here is loaded by
+# Debian bookworm's nbdkit (1.42.3, installed in the final stage below), so the
+# source it is compiled against should be the same release. Cloning HEAD built
+# a plugin from a different series than the binary loading it, and made the
+# image non-reproducible. Bump this together with the base image.
+ARG NBDKIT_REF=v1.42.3
+RUN git clone --depth 1 --branch "$NBDKIT_REF" https://gitlab.com/nbdkit/nbdkit.git \
     && cd nbdkit \
     && autoreconf -i \
     && ./configure --disable-dependency-tracking \
@@ -21,8 +27,10 @@ RUN npm run build
 
 FROM python:3.11-slim
 
-LABEL maintainer="THIS Cyber Security" \
-      description="VMExec — VM Backup & Disaster Recovery"
+LABEL org.opencontainers.image.title="VMExec" \
+      org.opencontainers.image.description="VM Backup & Disaster Recovery for VMware ESXi" \
+      org.opencontainers.image.source="https://github.com/stackblaze/vmexec" \
+      org.opencontainers.image.licenses="MIT"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
@@ -45,7 +53,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 COPY --from=frontend-build /app/static/dist ./static/dist
 
-RUN mkdir -p data bin/ovftool static vendor/vddk /tmp/vmware-root \
+RUN mkdir -p data static vendor/vddk /tmp/vmware-root \
     && chmod 1777 /tmp/vmware-root
 
 VOLUME ["/app/data"]

@@ -13,28 +13,22 @@ if exist "VMBackupEnterprise_Release.zip" del /q "VMBackupEnterprise_Release.zip
 if exist "build_temp" rmdir /s /q "build_temp"
 
 mkdir "build_temp"
-mkdir "build_temp\templates"
 
 echo [2/3] Copying Core Application Files...
-copy main.py build_temp\ >nul
-copy worker.py build_temp\ >nul
-copy worker_daemon.py build_temp\ >nul
-copy models.py build_temp\ >nul
-copy auth.py build_temp\ >nul
-copy esxi_handler.py build_temp\ >nul
-copy backup_engine.py build_temp\ >nul
-copy config_env.py build_temp\ >nul
-copy logger_util.py build_temp\ >nul
-copy storage_util.py build_temp\ >nul
-copy ssl_util.py build_temp\ >nul
-copy init_db.py build_temp\ >nul
-copy start_web.bat build_temp\ >nul
-copy start_worker.bat build_temp\ >nul
-
-
+:: Copy every module rather than an explicit list. The old list had drifted and
+:: silently omitted api\, services\, static\ and several transports, producing
+:: a release zip that could not start.
+xcopy *.py "build_temp\" /Y /Q >nul
+xcopy *.bat "build_temp\" /Y /Q >nul
 copy requirements.txt build_temp\ >nul
-copy setup.bat build_temp\ >nul
-copy templates\* build_temp\templates\ >nul
+xcopy api "build_temp\api" /E /I /Y /Q >nul
+xcopy services "build_temp\services" /E /I /Y /Q >nul
+xcopy templates "build_temp\templates" /E /I /Y /Q >nul
+xcopy static "build_temp\static" /E /I /Y /Q >nul
+xcopy scripts "build_temp\scripts" /E /I /Y /Q >nul
+:: vendor\vddk stays EMPTY on purpose: the VDDK is proprietary and cannot be
+:: redistributed. install-vddk.sh / the Settings page explain how to supply it.
+mkdir "build_temp\vendor\vddk" 2>nul
 
 echo Waiting for file system to settle...
 timeout /t 2 /nobreak >nul

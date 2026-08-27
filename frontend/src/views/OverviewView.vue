@@ -16,6 +16,25 @@
       <button type="button" class="rounded bg-brand text-white px-3 py-1.5 text-xs font-semibold transition-colors duration-200 hover:bg-brand-hover" @click="openWizard">Open setup wizard</button>
     </div>
 
+    <div v-if="data?.vddk_installed === false && data?.host_count > 0" class="mb-5 px-4 py-3 rounded-lg border border-yellow-500/35 bg-yellow-500/8 text-sm flex items-center justify-between gap-3">
+      <span class="flex-1 min-w-0">
+        <span class="block font-semibold mb-1">VDDK not installed — backups will fail</span>
+        <span class="block leading-relaxed">
+          VMExec streams virtual disks through VMware's Virtual Disk Development Kit (VDDK).
+          It is <strong>proprietary software, not open source</strong>, and its licence forbids
+          redistribution — so it cannot be bundled with VMExec and must be downloaded
+          <strong>directly from Broadcom</strong> using a free developer account, where you accept
+          their licence yourself.
+          Choose the <strong>Linux 64-bit</strong> package
+          (<code class="font-mono">VMware-vix-disklib-*.tar.gz</code>, v8 or v9 — match it to your
+          vSphere version), then place the tarball in <code class="font-mono">vendor/vddk/</code>
+          on the server. VMExec detects and installs it automatically; no restart needed, and this
+          message clears once it is in place.
+        </span>
+      </span>
+      <a href="https://developer.broadcom.com/sdks/vmware-virtual-disk-development-kit-vddk/latest" target="_blank" rel="noopener noreferrer" class="shrink-0 rounded bg-brand text-white px-3 py-1.5 text-xs font-semibold transition-colors duration-200 hover:bg-brand-hover">Download VDDK</a>
+    </div>
+
     <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
       <div class="p-4 px-[1.1rem] rounded-lg border border-border bg-card">
         <div class="text-[0.6875rem] font-bold uppercase tracking-wider text-muted mb-1.5">Protected</div>

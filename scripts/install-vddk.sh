@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install VMware VDDK for NovaBak NBD transport.
+# Install VMware VDDK for the VMExec NBD transport.
 # Download VDDK 9.x Linux tarball from Broadcom (requires free developer account):
 #   https://developer.broadcom.com/sdks/vmware-virtual-disk-development-kit-vddk/latest
 #
@@ -36,4 +36,4 @@ if [[ ! -f "$DESTDIR/lib64/libvixDiskLib.so" ]]; then
 fi
 
 echo "VDDK installed to $DESTDIR"
-echo "Set in NovaBak Settings → VDDK library path, or VDDK_LIBDIR=$DESTDIR"
+echo "Set in VMExec Settings → VDDK library path, or VDDK_LIBDIR=$DESTDIR"

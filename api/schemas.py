@@ -239,6 +239,11 @@ class InventorySelectionItem(BaseModel):
 class InventoryApplyRequest(BaseModel):
     updates: List[InventorySelectionItem] = []
     restagger: bool = False
+    # Anchor for the staggered spread; defaults preserved server-side.
+    base_hour: Optional[int] = None
+    base_minute: Optional[int] = None
+    # Gap between staggered jobs; server clamps to 5-180 minutes.
+    interval_minutes: Optional[int] = None
 
 
 class VmResponse(BaseModel):
@@ -386,6 +391,9 @@ class OverviewAttentionItem(BaseModel):
 
 
 class OverviewResponse(BaseModel):
+    # False = at least one host registered but the VDDK library is absent, so
+    # scheduled jobs will fail; the Overview page surfaces this as a banner.
+    vddk_installed: Optional[bool] = None
     protected_count: int
     scheduled_count: int
     running_count: int

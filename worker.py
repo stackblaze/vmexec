@@ -58,7 +58,7 @@ def _smtp_send(config, to_addrs: list, subject: str, body: str):
         return
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = config.smtp_user if config.smtp_user else "novabak@local"
+    msg["From"] = config.smtp_user if config.smtp_user else "vmexec@local"
     msg["To"] = ", ".join(to_addrs)
     msg.set_content(body)
     try:
@@ -521,6 +521,11 @@ def perform_backup(vm_id: int):
                 if cbt_dest:
                     dest_rel_dir = cbt_dest
                 if not success:
+                    # export_cbt_backup reports a user cancel as an ordinary
+                    # failure string — don't restart the cancelled work as a
+                    # legacy full backup.
+                    if cancel_check():
+                        raise BackupCancelled("Backup cancelled by user")
                     log_warn(f"[CBT] Failed ({result_msg}); falling back to legacy full backup")
                     vm.progress = 0
                     vm.speed_mbps = 0.0

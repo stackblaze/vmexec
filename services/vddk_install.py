@@ -2,6 +2,7 @@
 
 import glob
 import os
+import re
 import shutil
 import tarfile
 
@@ -11,8 +12,10 @@ from logger_util import log_info, log_warn, log_error
 # Bundled tarball locations (read-only mount in Docker)
 VDDK_VENDOR_DIRS = [
     "/app/vendor/vddk",
-    "/opt/NovaBak/vendor/vddk",
+    "/opt/vmexec/vendor/vddk",
     os.path.join(DATA_DIR, "vendor", "vddk"),
+    # Legacy NovaBak location, kept last so existing installs keep working.
+    "/opt/NovaBak/vendor/vddk",
 ]
 
 
@@ -27,8 +30,29 @@ def get_vddk_libdir(config=None):
     return os.path.join(DATA_DIR, "vddk", "vmware-vix-disklib-distrib")
 
 
+def parse_vddk_version(path):
+    """
+    Extract a comparable version tuple from a VDDK tarball filename.
+
+    Broadcom has shipped several shapes across releases, e.g.
+        VMware-vix-disklib-8.0.3-24145417.x86_64.tar.gz
+        VMware-vix-disklib-9.0.0-24280709.x86_64.tar.gz
+    Returns () when no version can be read, which sorts below anything real.
+    """
+    m = re.search(r"VMware-vix-disklib-([0-9]+(?:\.[0-9]+)*)", os.path.basename(path))
+    if not m:
+        return ()
+    return tuple(int(part) for part in m.group(1).split("."))
+
+
 def find_vddk_tarball():
-    """Return newest VMware-vix-disklib-*.tar.gz in vendor directories."""
+    """
+    Return the HIGHEST-VERSION VMware-vix-disklib-*.tar.gz in the vendor dirs.
+
+    Previously this picked by mtime, so copying an older tarball onto a host
+    that already had a newer one silently downgraded VDDK. Version wins; mtime
+    only breaks ties between identical versions.
+    """
     candidates = []
     for vendor_dir in VDDK_VENDOR_DIRS:
         if not os.path.isdir(vendor_dir):
@@ -36,7 +60,7 @@ def find_vddk_tarball():
         candidates.extend(glob.glob(os.path.join(vendor_dir, "VMware-vix-disklib-*.tar.gz")))
     if not candidates:
         return None
-    return max(candidates, key=os.path.getmtime)
+    return max(candidates, key=lambda p: (parse_vddk_version(p), os.path.getmtime(p)))
 
 
 def is_vddk_installed(libdir=None):
@@ -45,6 +69,26 @@ def is_vddk_installed(libdir=None):
         if os.path.isfile(os.path.join(libdir, sub, "libvixDiskLib.so")):
             return True
     return False
+
+
+def _find_distrib_root(root):
+    """
+    Locate the VDDK distribution inside an extracted tarball.
+
+    Identifies it by CONTENT — the directory holding lib64/libvixDiskLib.so —
+    rather than by the exact name "vmware-vix-disklib-distrib". The old exact
+    match meant any future layout change (a version-qualified directory name,
+    an extra nesting level) failed with "not found in tarball" even though the
+    library was present, so a new VDDK release could not be adopted without a
+    code change. Searched depth-first, shallowest match wins.
+    """
+    for current, dirnames, _files in os.walk(root):
+        for sub in ("lib64", "lib32"):
+            if os.path.isfile(os.path.join(current, sub, "libvixDiskLib.so")):
+                return current
+        # keep the walk cheap and deterministic
+        dirnames.sort()
+    return None
 
 
 def install_vddk_from_tarball(tarball_path, libdir=None):
@@ -64,28 +108,51 @@ def install_vddk_from_tarball(tarball_path, libdir=None):
         os.makedirs(tmp, exist_ok=True)
 
         with tarfile.open(tarball_path, "r:gz") as tf:
-            tf.extractall(tmp)
+            # filter="data" refuses absolute paths, traversal and special files.
+            # Added in 3.11.4/3.12 and the default from 3.14; passing it
+            # explicitly keeps behaviour identical across those versions.
+            try:
+                tf.extractall(tmp, filter="data")
+            except TypeError:
+                tf.extractall(tmp)
 
-        distrib = None
-        for name in os.listdir(tmp):
-            if name == "vmware-vix-disklib-distrib":
-                distrib = os.path.join(tmp, name)
-                break
+        distrib = _find_distrib_root(tmp)
         if not distrib:
-            return False, "vmware-vix-disklib-distrib not found in tarball"
-
-        so_path = os.path.join(distrib, "lib64", "libvixDiskLib.so")
-        if not os.path.isfile(so_path):
-            so_path = os.path.join(distrib, "lib32", "libvixDiskLib.so")
-        if not os.path.isfile(so_path):
-            return False, "libvixDiskLib.so missing in tarball"
+            return False, (
+                "No VDDK distribution found in the tarball: no directory "
+                "containing lib64/libvixDiskLib.so (or lib32)."
+            )
 
         if os.path.isdir(libdir):
             shutil.rmtree(libdir)
         shutil.move(distrib, libdir)
         shutil.rmtree(tmp, ignore_errors=True)
 
-        version = os.path.basename(tarball_path).replace("VMware-vix-disklib-", "").replace(".x86_64.tar.gz", "")
+        # nbdkit's vddk plugin dlopens a VERSIONED soname, and older plugins
+        # (including Debian bookworm's 1.42 era) only know libvixDiskLib.so.8.
+        # VDDK 9.x ships .so.9* only, so the plugin reported "cannot open
+        # shared object file" and VDDK looked broken while being perfectly
+        # healthy. Provide the compat names; verified live that the v9 library
+        # serves the v8-era plugin ABI (nbdinfo + full backup on vSphere 7.0.3).
+        for sub in ("lib64", "lib32"):
+            libd = os.path.join(libdir, sub)
+            if not os.path.isdir(libd):
+                continue
+            real = sorted(
+                p for p in glob.glob(os.path.join(libd, "libvixDiskLib.so.*"))
+                if not os.path.islink(p)
+            )
+            if not real:
+                continue
+            newest = os.path.basename(real[-1])
+            for compat in ("libvixDiskLib.so.8", "libvixDiskLib.so"):
+                path = os.path.join(libd, compat)
+                if not os.path.exists(path):
+                    os.symlink(newest, path)
+                    log_info(f"[VDDK] Compat symlink {compat} -> {newest}")
+
+        parsed = parse_vddk_version(tarball_path)
+        version = ".".join(str(n) for n in parsed) if parsed else "unknown version"
         log_info(f"[VDDK] Installed version {version} at {libdir}")
         return True, f"VDDK {version} installed at {libdir}"
 
@@ -107,9 +174,14 @@ def ensure_vddk_installed(config=None, force=False):
 
     tarball = find_vddk_tarball()
     if not tarball:
+        # Name the directories actually searched. The old text hardcoded
+        # /opt/NovaBak/vendor/vddk, which does not exist on most installs, so
+        # the one instruction the operator gets pointed at the wrong place.
+        searched = ", ".join(VDDK_VENDOR_DIRS)
         return False, (
-            "No VDDK tarball in vendor/vddk/. "
-            "Place VMware-vix-disklib-*.tar.gz in /opt/NovaBak/vendor/vddk/ on the server."
+            "No VDDK tarball found. Download VMware-vix-disklib-*.tar.gz from "
+            "Broadcom (it is proprietary and cannot be shipped with VMExec) and "
+            f"place it in one of: {searched}"
         )
 
     ok, msg = install_vddk_from_tarball(tarball, libdir)

@@ -44,3 +44,12 @@ static/vmexec_logo.png
 static/vmexec_logo_sm.png
 static/vmexec_icon.png
 static/vmexec_icon_128.png
+
+# Vendored ovftool was removed: it was never referenced by any code.
+# If a future feature needs it, install it on the host rather than committing
+# ~106 MB of platform-specific binaries.
+bin/ovftool/
+
+# Local dev overrides — machine-specific, never committed.
+docker-compose.override.yml
+*.bak

@@ -265,9 +265,15 @@ def add_esxi_host(db, name, host_ip, username, password, connection_type="auto")
     if existing:
         raise ValueError(f"Host '{name}' already exists")
 
-    si = esxi_handler.connect_esxi(host_ip, username, password)
-    if not si:
-        raise ConnectionError(f"Could not connect to host at {host_ip}")
+    # Store what we actually connect to, not what was pasted: a stray scheme or
+    # trailing slash otherwise persists into every later job on this host.
+    host_ip = esxi_handler.normalize_host(host_ip)
+    try:
+        si = esxi_handler.connect_esxi(host_ip, username, password, raise_on_error=True)
+    except esxi_handler.VSphereConnectionError as e:
+        # Carries the real reason (bad credentials vs unresolvable name vs
+        # unreachable port) so the caller can show it instead of a blanket 502.
+        raise ConnectionError(str(e)) from e
 
     detected = vsphere_context.detect_connection_type(si)
     stored_type = connection_type or vsphere_context.CONN_AUTO
@@ -342,8 +348,20 @@ def sync_vms_for_host(db, host_id):
             vm.power_state = vm_data.get("power_state", "Unknown")
             if vm.esxi_host_id != host.id:
                 vm.esxi_host_id = host.id
+
+    # Prune rows this host no longer reports as backup candidates: templates
+    # (filtered out of get_all_vms) and VMs deleted from vCenter. Scoped to
+    # THIS host so a second registered host's inventory is untouched, and
+    # selected rows are kept so a rename or transient absence never silently
+    # drops a configured job.
+    seen = {v["name"] for v in vm_list}
+    pruned = []
+    for vm in db.query(VM).filter(VM.esxi_host_id == host.id).all():
+        if vm.vm_name not in seen and not vm.is_selected:
+            pruned.append(vm.vm_name)
+            db.delete(vm)
     db.commit()
-    return {"synced_new": synced, "total_on_host": len(vm_list)}
+    return {"synced_new": synced, "total_on_host": len(vm_list), "pruned": pruned}
 
 
 def latest_backup_messages(db, vm_names):
@@ -415,11 +433,18 @@ def update_vm_job(db, vm_id, data):
     return vm
 
 
-def stagger_selected_vm_schedules(db, base_hour=2, base_minute=0):
-    """Spread selected VM daily schedules so at most N jobs share the same hour."""
-    config = get_or_create_config(db)
-    max_per_hour = max(1, min(12, int(getattr(config, "max_schedules_per_hour", None) or 2)))
-    interval = max(1, 60 // max_per_hour)
+def stagger_selected_vm_schedules(db, base_hour=2, base_minute=0, interval_minutes=None):
+    """Spread selected VM daily schedules, one job every interval_minutes.
+
+    interval_minutes wins when given (clamped 5-180); otherwise the gap is
+    derived from config.max_schedules_per_hour as before (default 2/hour = 30).
+    """
+    if interval_minutes is not None:
+        interval = max(5, min(180, int(interval_minutes)))
+    else:
+        config = get_or_create_config(db)
+        max_per_hour = max(1, min(12, int(getattr(config, "max_schedules_per_hour", None) or 2)))
+        interval = max(1, 60 // max_per_hour)
     vms = db.query(VM).filter(VM.is_selected == True).order_by(VM.vm_name).all()
     for i, vm in enumerate(vms):
         total_min = base_minute + i * interval
@@ -427,7 +452,7 @@ def stagger_selected_vm_schedules(db, base_hour=2, base_minute=0):
         vm.schedule_minute = total_min % 60
 
 
-def apply_inventory_selections(db, updates, restagger=False):
+def apply_inventory_selections(db, updates, restagger=False, base_hour=None, base_minute=None, interval_minutes=None):
     """Apply inventory checkbox changes; spread schedules across the day."""
     newly_enabled = False
     for item in updates or []:
@@ -445,10 +470,24 @@ def apply_inventory_selections(db, updates, restagger=False):
         else:
             vm.is_job_active = False
 
+    # SessionLocal runs with autoflush=False, so without an explicit flush the
+    # count below and the stagger query still see the PRE-update selection: a
+    # just-deselected VM kept its slot in the spread and the reported count was
+    # off by the size of the change.
+    db.flush()
     selected_count = db.query(VM).filter(VM.is_selected == True).count()
     staggered = False
     if selected_count > 0 and (restagger or newly_enabled or len(updates or []) > 0):
-        stagger_selected_vm_schedules(db)
+        # Anchor the spread at the caller's chosen start time; the old hardcoded
+        # 02:00 silently moved schedules a user had deliberately set elsewhere.
+        kwargs = {}
+        if base_hour is not None:
+            kwargs["base_hour"] = max(0, min(23, int(base_hour)))
+        if base_minute is not None:
+            kwargs["base_minute"] = max(0, min(59, int(base_minute)))
+        if interval_minutes is not None:
+            kwargs["interval_minutes"] = interval_minutes
+        stagger_selected_vm_schedules(db, **kwargs)
         staggered = True
 
     db.commit()
@@ -838,6 +877,8 @@ def _overview_host_label(hosts):
 
 
 def get_overview(db):
+    from services.vddk_install import is_vddk_installed, get_vddk_libdir
+
     config = get_or_create_config(db)
     vms = db.query(VM).all()
     esxi_hosts = db.query(ESXiHost).all()
@@ -926,6 +967,7 @@ def get_overview(db):
     setup_incomplete = len(esxi_hosts) == 0 or len(selected) == 0
 
     return {
+        "vddk_installed": is_vddk_installed(get_vddk_libdir(config)),
         "protected_count": len(selected),
         "scheduled_count": sum(1 for v in selected if v.is_job_active),
         "running_count": len(live_jobs),
