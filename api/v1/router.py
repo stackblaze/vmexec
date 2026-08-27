@@ -15,8 +15,9 @@ from api.schemas import (
     RestoreCreateRequest, RestoreResponse, OverviewResponse,
     SessionLoginRequest, SessionLoginResponse, SessionMfaRequest,
     MfaSetupRequest, MfaSetupStartResponse, BootstrapResponse,
+    K8sClusterCreate, K8sClusterUpdate, K8sClusterResponse, K3sS3Config,
 )
-from models import User, ApiKey, ESXiHost, VM
+from models import User, ApiKey, ESXiHost, VM, K8sCluster
 from services import backup_ops
 from services import user_ops
 
@@ -622,3 +623,214 @@ def jobs_progress(db: Session = Depends(get_db), user: User = Depends(get_api_us
 def overview(db: Session = Depends(get_db), user: User = Depends(get_api_user)):
     return OverviewResponse(**backup_ops.get_overview(db))
 
+
+
+# ---------------------------------------------------------------------------
+#  Kubernetes state backups (Phase 1: etcd/datastore snapshots)
+# ---------------------------------------------------------------------------
+import json as _json
+
+
+def _k8s_to_dict(c):
+    return {
+        "id": c.id, "name": c.name,
+        "targets": _json.loads(c.targets or "[]"),
+        "schedule_hour": c.schedule_hour, "schedule_minute": c.schedule_minute,
+        "schedule_frequency": c.schedule_frequency or "interval",
+        "interval_hours": c.interval_hours or 1,
+        "retention_count": c.retention_count or 48,
+        "is_job_active": bool(c.is_job_active),
+        "last_backup": c.last_backup.isoformat() if c.last_backup else None,
+        "last_status": c.last_status or "Never",
+        "current_action": c.current_action or "",
+    }
+
+
+@router.get("/k8s/clusters", response_model=list[K8sClusterResponse])
+def list_k8s_clusters(db: Session = Depends(get_db), user: User = Depends(get_api_user)):
+    return [K8sClusterResponse(**_k8s_to_dict(c)) for c in db.query(K8sCluster).all()]
+
+
+@router.post("/k8s/clusters", response_model=K8sClusterResponse)
+def create_k8s_cluster(
+    body: K8sClusterCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_api_role("admin")),
+):
+    from services import k8s_backup
+    if db.query(K8sCluster).filter(K8sCluster.name == body.name).first():
+        raise HTTPException(status_code=409, detail="cluster name already registered")
+    for t in body.targets:
+        try:
+            k8s_backup.resolve_target(t)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+    c = K8sCluster(name=body.name, kubeconfig=body.kubeconfig,
+                   targets=_json.dumps(body.targets))
+    db.add(c)
+    db.commit()
+    db.refresh(c)
+    return K8sClusterResponse(**_k8s_to_dict(c))
+
+
+@router.patch("/k8s/clusters/{cluster_id}", response_model=K8sClusterResponse)
+def update_k8s_cluster(
+    cluster_id: int,
+    body: K8sClusterUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_api_role("admin")),
+):
+    from services import k8s_backup
+    c = db.query(K8sCluster).filter(K8sCluster.id == cluster_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="cluster not found")
+    data = body.model_dump(exclude_unset=True)
+    if "targets" in data and data["targets"] is not None:
+        for t in data["targets"]:
+            try:
+                k8s_backup.resolve_target(t)
+            except ValueError as e:
+                raise HTTPException(status_code=422, detail=str(e))
+        c.targets = _json.dumps(data.pop("targets"))
+    for field in ("kubeconfig", "schedule_hour", "schedule_minute",
+                  "schedule_frequency", "interval_hours", "retention_count",
+                  "is_job_active"):
+        if field in data and data[field] is not None:
+            setattr(c, field, data[field])
+    if (c.schedule_frequency or "interval") == "interval":
+        c.interval_hours = max(1, min(12, int(c.interval_hours or 1)))
+    db.commit()
+    db.refresh(c)
+    return K8sClusterResponse(**_k8s_to_dict(c))
+
+
+@router.delete("/k8s/clusters/{cluster_id}")
+def delete_k8s_cluster(
+    cluster_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_api_role("admin")),
+):
+    c = db.query(K8sCluster).filter(K8sCluster.id == cluster_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="cluster not found")
+    db.delete(c)
+    db.commit()
+    return {"ok": True, "message": "Cluster removed; stored snapshots kept on disk"}
+
+
+@router.post("/k8s/clusters/{cluster_id}/run")
+def run_k8s_backup(
+    cluster_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_api_role("admin", "operator")),
+):
+    c = db.query(K8sCluster).filter(K8sCluster.id == cluster_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="cluster not found")
+    c.current_action = "PENDING_RUN"
+    db.commit()
+    return {"ok": True, "message": "Snapshot queued"}
+
+
+@router.post("/k8s/clusters/{cluster_id}/test")
+def test_k8s_cluster(
+    cluster_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_api_role("admin", "operator")),
+):
+    from services import k8s_backup
+    c = db.query(K8sCluster).filter(K8sCluster.id == cluster_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="cluster not found")
+    try:
+        return {"results": k8s_backup.test_cluster(c)}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"cluster unreachable: {str(e)[:200]}")
+
+
+@router.get("/k8s/clusters/{cluster_id}/backups")
+def list_k8s_backups(
+    cluster_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_api_user),
+):
+    import backup_manifest as bm
+    import storage_util
+    from services import k8s_backup
+    c = db.query(K8sCluster).filter(K8sCluster.id == cluster_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="cluster not found")
+    config = backup_ops.get_or_create_config(db)
+    storage = storage_util.get_storage(config)
+    out = []
+    for t in _json.loads(c.targets or "[]"):
+        if t.get("profile") == "tenants":
+            base = f"k8s/{c.name}/tenants"
+            tenant_dirs = storage.list_dirs(base) if storage.exists(base) else []
+            for tenant in sorted(tenant_dirs):
+                tname = f"{base}/{tenant}"
+                chain = bm.load_chain(storage, tname)
+                points = []
+                for p in (chain or {}).get("points", []):
+                    manifest = bm.load_manifest(storage, tname, p["id"]) or {}
+                    points.append({
+                        "id": p["id"], "timestamp": p.get("timestamp"),
+                        "size_bytes": manifest.get("size_bytes"),
+                        "sha256": manifest.get("sha256"),
+                        "etcd_status": {"objects": manifest.get("total_objects")},
+                    })
+                out.append({"target": f"tenant: {tenant}", "points": points})
+            continue
+        name = k8s_backup.chain_name(c.name, t.get("name", "?"))
+        chain = bm.load_chain(storage, name)
+        points = []
+        for p in (chain or {}).get("points", []):
+            manifest = bm.load_manifest(storage, name, p["id"]) or {}
+            points.append({
+                "id": p["id"], "timestamp": p.get("timestamp"),
+                "size_bytes": manifest.get("size_bytes"),
+                "sha256": manifest.get("sha256"),
+                "etcd_status": manifest.get("etcd_status"),
+            })
+        out.append({"target": t.get("name"), "points": points})
+    return {"cluster": c.name, "targets": out}
+
+
+@router.get("/k8s/clusters/{cluster_id}/k3s-status")
+def k3s_status(
+    cluster_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_api_user),
+):
+    from services import k8s_backup
+    c = db.query(K8sCluster).filter(K8sCluster.id == cluster_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="cluster not found")
+    try:
+        core = k8s_backup._clients(c.kubeconfig)
+        return k8s_backup.k3s_status(core)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"cluster unreachable: {str(e)[:200]}")
+
+
+@router.post("/k8s/clusters/{cluster_id}/k3s-s3")
+def k3s_apply_s3(
+    cluster_id: int,
+    body: K3sS3Config,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_api_role("admin")),
+):
+    from services import k8s_backup
+    c = db.query(K8sCluster).filter(K8sCluster.id == cluster_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="cluster not found")
+    try:
+        core = k8s_backup._clients(c.kubeconfig)
+        if not k8s_backup.k3s_detect(core):
+            raise HTTPException(status_code=422,
+                                detail="no k3s embedded-etcd nodes detected on this cluster")
+        return k8s_backup.k3s_apply_s3(core, body.model_dump())
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"apply failed: {str(e)[:200]}")

@@ -80,6 +80,18 @@ export const restoreApi = {
   chain: (name) => api(`/backups/chain/${encodeURIComponent(name)}`),
 }
 
+export const k8sApi = {
+  list: () => api('/k8s/clusters'),
+  create: (body) => api('/k8s/clusters', { method: 'POST', body: JSON.stringify(body) }),
+  patch: (id, body) => api(`/k8s/clusters/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  remove: (id) => api(`/k8s/clusters/${id}`, { method: 'DELETE' }),
+  run: (id) => api(`/k8s/clusters/${id}/run`, { method: 'POST' }),
+  test: (id) => api(`/k8s/clusters/${id}/test`, { method: 'POST' }),
+  backups: (id) => api(`/k8s/clusters/${id}/backups`),
+  k3sStatus: (id) => api(`/k8s/clusters/${id}/k3s-status`),
+  k3sApplyS3: (id, body) => api(`/k8s/clusters/${id}/k3s-s3`, { method: 'POST', body: JSON.stringify(body) }),
+}
+
 export const overviewApi = {
   get: () => api('/overview'),
 }

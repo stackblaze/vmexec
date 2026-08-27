@@ -3,7 +3,7 @@ import sys
 import time
 import hashlib
 import threading
-from models import SessionLocal, VM, Config, ESXiHost, init_db
+from models import SessionLocal, VM, Config, ESXiHost, K8sCluster, init_db
 import worker
 from logger_util import log_info, log_error, log_critical
 from config_env import DATA_DIR
@@ -41,8 +41,18 @@ def get_schedule_hash():
         paused = bool(getattr(config, "scheduler_paused", False)) if config else False
         vms = db.query(VM).filter(VM.is_selected == True).all()
         # Create a string representation of the schedule state
+        # Include frequency/days/interval so switching e.g. daily → weekly
+        # reschedules live (previously only hour/minute/active were hashed).
         state_str = f"paused:{int(paused)}|" + "".join(
-            [f"{v.id}:{v.schedule_hour}:{v.schedule_minute}:{v.is_job_active}" for v in vms]
+            [f"{v.id}:{v.schedule_hour}:{v.schedule_minute}:{v.is_job_active}:"
+             f"{getattr(v, 'schedule_frequency', 'daily')}:{getattr(v, 'schedule_days', '')}:"
+             f"{getattr(v, 'interval_hours', 0)}"
+             for v in vms]
+        )
+        clusters = db.query(K8sCluster).all()
+        state_str += "".join(
+            [f"|k8s{c.id}:{c.schedule_hour}:{c.schedule_minute}:{c.is_job_active}:"
+             f"{c.schedule_frequency}:{c.interval_hours}" for c in clusters]
         )
         return hashlib.md5(state_str.encode()).hexdigest()
     finally:
@@ -128,6 +138,13 @@ def run_daemon():
                 # Submit to worker thread pool
                 worker.queue_backup(vm.id)
                 
+            # 2b. Manual K8s snapshot requests
+            for cl in db.query(K8sCluster).filter(K8sCluster.current_action == "PENDING_RUN").all():
+                log_info(f"[PID {pid}] Manual k8s snapshot request for cluster: {cl.name}")
+                cl.current_action = "Queued..."
+                db.commit()
+                worker.queue_k8s_backup(cl.id)
+
             # 3. Poll for Manual Stop Requests ("PENDING_STOP")
             pending_stops = db.query(VM).filter(VM.current_action == "PENDING_STOP").all()
             if pending_stops:

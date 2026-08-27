@@ -164,6 +164,10 @@
                 </div>
                 <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">Full every N runs</span><input v-model.number="cfg.cbt_full_interval" type="number" min="1" max="60" class="w-full py-1.5 px-3 text-center text-sm" /></div>
                 <div>
+                  <span class="block mb-1 text-xs font-semibold uppercase text-muted" title="Comma-separated path prefixes skipped during backup. Default fcd/ excludes vSphere CNS / Kubernetes CSI volumes, which attach and detach as pods move — protect those at the Kubernetes layer (e.g. Velero) instead.">Exclude disks</span>
+                  <input v-model="cfg.exclude_disk_patterns" type="text" placeholder="fcd/" class="w-full py-1.5 px-3 text-sm font-mono" />
+                </div>
+                <div>
                   <span class="block mb-1 text-xs font-semibold uppercase text-muted">Retention</span>
                   <select v-model="cfg.retention_mode" class="w-full py-1.5 px-3 text-sm mt-1">
                     <option value="count">Count (per VM)</option>

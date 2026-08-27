@@ -77,7 +77,7 @@ def export_cbt_backup(
     if not vm:
         return False, f"VM {vm_name} not found", None
 
-    disks = cbt_core.collect_cbt_disks(vm)
+    disks = cbt_core.collect_cbt_disks(vm, config=config)
     if not disks:
         return False, f"No disks found for {vm_name}", None
 

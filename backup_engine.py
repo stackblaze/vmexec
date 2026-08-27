@@ -945,8 +945,14 @@ def _find_snapshot_by_name(vm, snap_name):
     return walk(vm.snapshot.rootSnapshotList)
 
 
-def _collect_vm_disk_layout(vm):
-    """Return disk descriptors, vmx paths, and power state for a VM."""
+def _collect_vm_disk_layout(vm, config=None):
+    """Return disk descriptors, vmx paths, and power state for a VM.
+
+    Disks matching config.exclude_disk_patterns are skipped, mirroring the
+    CBT collector (cbt_core.collect_cbt_disks).
+    """
+    from cbt_core import disk_excluded
+    patterns = getattr(config, "exclude_disk_patterns", None) if config else None
     power_state = getattr(vm.runtime, "powerState", "poweredOn")
     is_off = power_state == "poweredOff"
 
@@ -963,6 +969,9 @@ def _collect_vm_disk_layout(vm):
         if not ds_name or fn in seen:
             continue
         seen.add(fn)
+        if disk_excluded(rel_path, patterns):
+            log_info(f"[BACKUP] Skipping excluded disk {fn} (exclude_disk_patterns)")
+            continue
         disk_descriptors.append({
             "ds_name": ds_name,
             "ds_path": fn,
@@ -1333,7 +1342,7 @@ def export_vm_native(si, vm_name, storage, dest_rel_dir, progress_callback=None,
             content = si.RetrieveContent()
             datacenter = content.rootFolder.childEntity[0]
 
-            is_off, disk_descriptors, vmx_ds_name, vmx_rel_path = _collect_vm_disk_layout(vm)
+            is_off, disk_descriptors, vmx_ds_name, vmx_rel_path = _collect_vm_disk_layout(vm, config=config)
             power_state = getattr(vm.runtime, "powerState", "poweredOn")
             live_method = {"nbd": "NBD/NFC", "nfc": "NFC"}.get(transport, "snapshot+copy")
             log_info(

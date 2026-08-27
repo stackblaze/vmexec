@@ -539,10 +539,11 @@ function progressText(vm) {
 }
 
 function scheduleLabel(vm) {
-  const freq = (vm.schedule_frequency || 'daily').replace(/^./, (c) => c.toUpperCase())
   const h = String(vm.schedule_hour).padStart(2, '0')
   const m = String(vm.schedule_minute).padStart(2, '0')
   const cbt = vm.cbt_enabled !== false ? 'CBT' : 'full'
+  let freq = (vm.schedule_frequency || 'daily').replace(/^./, (c) => c.toUpperCase())
+  if (vm.schedule_frequency === 'interval') freq = `Every ${vm.interval_hours || 6}h`
   return `${freq} ${h}:${m} · keep ${vm.retention_count} · ${cbt}`
 }
 

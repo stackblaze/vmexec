@@ -62,3 +62,22 @@ class TestProjectUsage(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDiskExclusion(unittest.TestCase):
+    """exclude_disk_patterns skips CNS/FCD disks from backup collection."""
+
+    def test_fcd_prefix_excluded(self):
+        import cbt_core
+        self.assertTrue(cbt_core.disk_excluded("fcd/abc.vmdk", "fcd/"))
+        self.assertFalse(cbt_core.disk_excluded("myvm/myvm.vmdk", "fcd/"))
+
+    def test_multiple_patterns_and_whitespace(self):
+        import cbt_core
+        self.assertTrue(cbt_core.disk_excluded("scratch/x.vmdk", "fcd/, scratch/"))
+        self.assertFalse(cbt_core.disk_excluded("prod/x.vmdk", "fcd/, scratch/"))
+
+    def test_empty_patterns_exclude_nothing(self):
+        import cbt_core
+        self.assertFalse(cbt_core.disk_excluded("fcd/abc.vmdk", ""))
+        self.assertFalse(cbt_core.disk_excluded("fcd/abc.vmdk", None))

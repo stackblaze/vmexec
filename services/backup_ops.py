@@ -50,6 +50,7 @@ def config_to_dict(config):
         "vddk_libdir": getattr(config, "vddk_libdir", None) or "",
         "cbt_enabled": getattr(config, "cbt_enabled", True),
         "cbt_full_interval": getattr(config, "cbt_full_interval", 7),
+        "exclude_disk_patterns": getattr(config, "exclude_disk_patterns", "fcd/") or "",
         "retention_mode": getattr(config, "retention_mode", "count") or "count",
         "gfs_daily_keep": getattr(config, "gfs_daily_keep", 7) or 7,
         "gfs_weekly_keep": getattr(config, "gfs_weekly_keep", 4) or 4,
@@ -127,6 +128,8 @@ def update_storage_config(db, data):
         config.vddk_libdir = data["vddk_libdir"]
     if "cbt_enabled" in data and data["cbt_enabled"] is not None:
         config.cbt_enabled = bool(data["cbt_enabled"])
+    if "exclude_disk_patterns" in data and data["exclude_disk_patterns"] is not None:
+        config.exclude_disk_patterns = str(data["exclude_disk_patterns"]).strip()
     if "cbt_full_interval" in data and data["cbt_full_interval"] is not None:
         config.cbt_full_interval = max(1, min(60, int(data["cbt_full_interval"])))
     if "retention_mode" in data and data["retention_mode"] is not None:
@@ -399,6 +402,7 @@ def vm_to_dict(vm, last_backup_message=None):
         "is_job_active": vm.is_job_active,
         "schedule_frequency": vm.schedule_frequency,
         "schedule_days": vm.schedule_days,
+        "interval_hours": getattr(vm, "interval_hours", 0) or 0,
         "last_backup": vm.last_backup.isoformat() if vm.last_backup else None,
         "last_backup_duration": getattr(vm, "last_backup_duration", 0) or 0,
         "last_status": vm.last_status,
@@ -420,14 +424,17 @@ def update_vm_job(db, vm_id, data):
     for field in (
         "is_selected", "schedule_hour", "schedule_minute", "retention_count",
         "is_job_active", "power_off_for_backup", "cbt_enabled", "schedule_frequency",
+        "interval_hours",
     ):
         if field in data and data[field] is not None:
             setattr(vm, field, data[field])
     if "schedule_days" in data and data["schedule_days"] is not None:
         valid_days = [d.strip() for d in data["schedule_days"].split(",") if d.strip().isdigit() and 0 <= int(d.strip()) <= 6]
         vm.schedule_days = ",".join(valid_days) if valid_days else "0,1,2,3,4,5,6"
-    if vm.schedule_frequency not in ("daily", "weekly", "monthly"):
+    if vm.schedule_frequency not in ("daily", "weekly", "monthly", "interval"):
         vm.schedule_frequency = "daily"
+    if vm.schedule_frequency == "interval":
+        vm.interval_hours = max(1, min(12, int(vm.interval_hours or 6)))
     db.commit()
     db.refresh(vm)
     return vm

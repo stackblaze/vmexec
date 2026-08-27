@@ -440,7 +440,7 @@ def export_live_nbd(
         time.sleep(SNAPSHOT_SETTLE_SECS)
 
         vm = vsphere_context.find_vm_by_name(si, vm_name)
-        _, disk_descriptors, _, _ = _collect_vm_disk_layout(vm)
+        _, disk_descriptors, _, _ = _collect_vm_disk_layout(vm, config=config)
         if not disk_descriptors:
             return False, f"No disks found for {vm_name} after snapshot"
 

@@ -52,11 +52,31 @@ def _wait_task(task, timeout_secs=600):
         raise RuntimeError(str(task.info.error))
 
 
-def collect_cbt_disks(vm):
-    """Return disk descriptors enriched with device_key and capacity_bytes."""
+def disk_excluded(rel_path, patterns):
+    """True when a disk's datastore-relative path matches an exclusion prefix.
+
+    patterns: comma-separated path prefixes (e.g. "fcd/"). The default
+    excludes vSphere CNS/First-Class Disks — Kubernetes CSI volumes that
+    attach/detach as pods move, so a per-VM image backup of them is an
+    inconsistent stale copy of data owned by another system.
+    """
+    for pat in (patterns or "").split(","):
+        pat = pat.strip()
+        if pat and rel_path.startswith(pat):
+            return True
+    return False
+
+
+def collect_cbt_disks(vm, config=None):
+    """Return disk descriptors enriched with device_key and capacity_bytes.
+
+    Disks matching config.exclude_disk_patterns are skipped (logged once).
+    """
     from pyVmomi import vim
     from backup_engine import _parse_datastore_path
+    from logger_util import log_info
 
+    patterns = getattr(config, "exclude_disk_patterns", None) if config else None
     disks = []
     seen = set()
     for dev in getattr(vm.config.hardware, "device", []) or []:
@@ -70,6 +90,9 @@ def collect_cbt_disks(vm):
         if not ds_name or fn in seen:
             continue
         seen.add(fn)
+        if disk_excluded(rel_path, patterns):
+            log_info(f"[CBT] Skipping excluded disk {fn} (exclude_disk_patterns)")
+            continue
         cap_kb = getattr(dev, "capacityInKB", None) or getattr(backing, "capacityInKB", 0)
         disks.append({
             "device_key": dev.key,

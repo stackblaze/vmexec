@@ -12,6 +12,7 @@ const routes = [
       { path: 'overview', name: 'overview', component: () => import('@/views/OverviewView.vue') },
       { path: 'backup', name: 'backup', component: () => import('@/views/JobsView.vue') },
       { path: 'restore', name: 'restore', component: () => import('@/views/RestoreView.vue') },
+      { path: 'kubernetes', name: 'kubernetes', component: () => import('@/views/K8sView.vue') },
       { path: 'settings/:panel?', name: 'settings', component: () => import('@/views/SettingsView.vue'), props: true },
       { path: 'account/:panel?', name: 'account', component: () => import('@/views/AccountView.vue'), props: true },
     ],

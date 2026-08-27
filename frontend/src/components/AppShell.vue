@@ -165,6 +165,7 @@ const tabs = [
   { to: '/overview', label: 'Overview' },
   { to: '/backup', label: 'Backup' },
   { to: '/restore', label: 'Restore' },
+  { to: '/kubernetes', label: 'Kubernetes' },
   { to: '/settings/storage', label: 'Settings' },
 ]
 

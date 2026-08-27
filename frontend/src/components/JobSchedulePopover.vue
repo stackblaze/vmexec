@@ -6,9 +6,21 @@
     </div>
     <select v-model="form.schedule_frequency" class="w-full py-1.5 px-2 text-xs mb-2" @change="save">
       <option value="daily">Daily</option>
+      <option value="interval">Every N hours</option>
       <option value="weekly">Weekly</option>
       <option value="monthly">Monthly</option>
     </select>
+
+    <div v-if="form.schedule_frequency === 'interval'" class="mb-2">
+      <span class="block text-xs font-semibold uppercase text-muted mb-1">Every</span>
+      <select v-model.number="form.interval_hours" class="w-full py-1.5 px-2 text-xs" @change="save">
+        <option :value="2">2 hours</option>
+        <option :value="4">4 hours</option>
+        <option :value="6">6 hours</option>
+        <option :value="8">8 hours</option>
+        <option :value="12">12 hours</option>
+      </select>
+    </div>
 
     <div class="mb-2" :style="{ opacity: form.schedule_frequency === 'daily' ? 0.35 : 1 }">
       <span class="block text-xs font-semibold uppercase text-muted mb-1">Days</span>
@@ -75,6 +87,7 @@ const form = reactive({
   schedule_hour: 2,
   schedule_minute: 0,
   retention_count: 7,
+  interval_hours: 6,
   is_job_active: true,
   power_off_for_backup: false,
   cbt_enabled: true,
@@ -87,6 +100,7 @@ function syncFromVm(vm) {
   form.schedule_hour = vm.schedule_hour ?? 2
   form.schedule_minute = vm.schedule_minute ?? 0
   form.retention_count = vm.retention_count ?? 7
+  form.interval_hours = vm.interval_hours || 6
   form.is_job_active = vm.is_job_active !== false
   form.power_off_for_backup = !!vm.power_off_for_backup
   form.cbt_enabled = vm.cbt_enabled !== false

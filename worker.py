@@ -11,7 +11,7 @@ import esxi_handler
 import backup_engine
 import storage_util
 import vsphere_context
-from models import SessionLocal, Config, VM, BackupLog, RestoreJob
+from models import SessionLocal, Config, VM, BackupLog, RestoreJob, K8sCluster
 from config_env import DATA_DIR
 from logger_util import log_info, log_warn, log_error, log_debug
 
@@ -273,6 +273,44 @@ def get_active_backup_vm_ids():
     """VM IDs currently running a backup thread (skip during orphan snapshot sweeps)."""
     with _active_backup_lock:
         return set(_active_backup_vm_ids)
+
+
+def perform_k8s_backup(cluster_id: int):
+    """Snapshot all etcd targets of a registered Kubernetes cluster."""
+    db = SessionLocal()
+    try:
+        cluster = db.query(K8sCluster).filter(K8sCluster.id == cluster_id).first()
+        if not cluster:
+            return
+        config = db.query(Config).first()
+        cluster.current_action = "Snapshotting..."
+        db.commit()
+        from services import k8s_backup
+        storage = storage_util.get_storage(config)
+        ok, msg = k8s_backup.run_cluster_backup(db, cluster, storage)
+        cluster.last_status = "Success" if ok else "Failed"
+        cluster.last_backup = datetime.datetime.utcnow()
+        cluster.current_action = ""
+        db.add(BackupLog(vm_name=f"k8s:{cluster.name}",
+                         status=cluster.last_status, message=msg))
+        db.commit()
+        log_info(f"[K8S] {cluster.name}: {cluster.last_status} — {msg}")
+    except Exception as e:
+        log_error(f"[K8S] cluster {cluster_id} backup error: {e}")
+        try:
+            cluster.last_status = "Failed"
+            cluster.current_action = ""
+            db.add(BackupLog(vm_name=f"k8s:{cluster.name}",
+                             status="Failed", message=str(e)[:300]))
+            db.commit()
+        except Exception:
+            pass
+    finally:
+        db.close()
+
+
+def queue_k8s_backup(cluster_id: int):
+    backup_queue_executor.submit(perform_k8s_backup, cluster_id)
 
 
 def queue_backup(vm_id: int):
@@ -741,6 +779,11 @@ def start_scheduler():
         cron_kwargs = dict(hour=vm.schedule_hour, minute=vm.schedule_minute)
         if freq == 'daily':
             pass  # No day restriction — fires every day of the week
+        elif freq == 'interval':
+            # Every N hours, anchored at schedule_hour (e.g. anchor 2, N=6
+            # → 02:00, 08:00, 14:00, 20:00 at schedule_minute past the hour).
+            n = max(1, min(12, int(getattr(vm, 'interval_hours', 0) or 6)))
+            cron_kwargs['hour'] = f"{vm.schedule_hour % n}/{n}"
         elif freq == 'weekly':
             cron_kwargs['day_of_week'] = days  # Run on selected weekdays
         elif freq == 'monthly':
@@ -758,9 +801,27 @@ def start_scheduler():
             misfire_grace_time=60
         )
         day_names = ['Mo','Tu','We','Th','Fr','Sa','Su']
-        day_label = ','.join(day_names[int(d)] for d in days.split(',') if d.strip().isdigit()) if freq != 'monthly' else '1st'
+        if freq == 'monthly':
+            day_label = '1st'
+        elif freq == 'interval':
+            day_label = f"every {max(1, min(12, int(getattr(vm, 'interval_hours', 0) or 6)))}h"
+        else:
+            day_label = ','.join(day_names[int(d)] for d in days.split(',') if d.strip().isdigit())
         log_info(f"Scheduled job {job_id} for {vm.vm_name} at {vm.schedule_hour:02d}:{vm.schedule_minute:02d} ({freq}: {day_label})")
     
+    # Kubernetes state-backup jobs (etcd/datastore snapshots)
+    clusters = db.query(K8sCluster).filter(K8sCluster.is_job_active == True).all()
+    for cl in clusters:
+        cron_kwargs = dict(hour=cl.schedule_hour, minute=cl.schedule_minute)
+        if (cl.schedule_frequency or 'interval') == 'interval':
+            n = max(1, min(12, int(cl.interval_hours or 1)))
+            cron_kwargs['hour'] = f"{cl.schedule_hour % n}/{n}"
+        scheduler.add_job(
+            queue_k8s_backup, 'cron', **cron_kwargs,
+            args=[cl.id], id=f"k8sbackup_{cl.id}", misfire_grace_time=60,
+        )
+        log_info(f"Scheduled k8s snapshot job for cluster {cl.name} ({cron_kwargs})")
+
     if not scheduler.running:
         scheduler.start()
     configure_concurrency(config or Config())

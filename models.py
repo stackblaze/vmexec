@@ -95,6 +95,12 @@ class Config(Base):
     # CBT / incremental backup settings
     cbt_enabled = Column(Boolean, default=True)
     cbt_full_interval = Column(Integer, default=7)  # incremental count before forced full
+    # Comma-separated path prefixes excluded from backup, matched against each
+    # disk's datastore-relative path. Default skips vSphere CNS/First-Class
+    # Disks (Kubernetes CSI volumes): they attach/detach as pods move, so
+    # per-VM image backups of them are inconsistent stale copies — protect
+    # them at the Kubernetes layer instead.
+    exclude_disk_patterns = Column(String, default="fcd/")
     storage_type = Column(String, default="SMB") # SMB, NFS, S3
     nfs_path = Column(String, default="")
     s3_endpoint = Column(String, default="")
@@ -155,6 +161,9 @@ class VM(Base):
     speed_mbps = Column(Float, default=0.0)  # Last known transfer speed
     power_off_for_backup = Column(Boolean, default=False)  # Shutdown VM before backup for faster direct-stream path
     cbt_enabled = Column(Boolean, default=True)  # Per-VM CBT; None would inherit config — use True default
+    # For schedule_frequency == 'interval': run every N hours (1-12), anchored
+    # at schedule_hour:schedule_minute. 0 for other frequencies.
+    interval_hours = Column(Integer, default=0)
 
 class BackupLog(Base):
     __tablename__ = "backup_logs"
@@ -163,6 +172,32 @@ class BackupLog(Base):
     timestamp = Column(DateTime, default=datetime.datetime.utcnow)
     status = Column(String) # Success / Failed
     message = Column(String)
+class K8sCluster(Base):
+    """A registered Kubernetes cluster backed up at the state level (etcd /
+    datastore snapshots), not as node images. Phase 1 of K8s support."""
+    __tablename__ = "k8s_clusters"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True)
+    kubeconfig = Column(EncryptedString)  # full kubeconfig YAML, encrypted at rest
+    # JSON list of snapshot targets:
+    #   [{"name": "management-etcd", "profile": "kubeadm"|"kamaji"|"custom",
+    #     "namespace": "...", "selector": "label=value", "container": "etcd",
+    #     "endpoint": "https://127.0.0.1:2379",
+    #     "cacert": "...", "cert": "...", "key": "..."}]
+    # Profile defaults fill unset fields; see services/k8s_backup.py.
+    targets = Column(String, default="[]")
+    # Scheduling — same vocabulary as VM jobs (daily | interval)
+    schedule_hour = Column(Integer, default=1)
+    schedule_minute = Column(Integer, default=0)
+    schedule_frequency = Column(String, default="interval")
+    interval_hours = Column(Integer, default=1)
+    retention_count = Column(Integer, default=48)
+    is_job_active = Column(Boolean, default=True)
+    last_backup = Column(DateTime, nullable=True)
+    last_status = Column(String, default="Never")
+    current_action = Column(String, default="")
+
+
 class RestoreJob(Base):
     __tablename__ = "restore_jobs"
     id = Column(Integer, primary_key=True, index=True)
@@ -257,6 +292,8 @@ def init_db():
             ("secondary_s3_region", "ALTER TABLE config ADD COLUMN secondary_s3_region VARCHAR DEFAULT 'us-east-1'"),
             ("last_secondary_copy_status", "ALTER TABLE vms ADD COLUMN last_secondary_copy_status VARCHAR DEFAULT 'none'"),
             ("last_backup_duration", "ALTER TABLE vms ADD COLUMN last_backup_duration INTEGER DEFAULT 0"),
+            ("exclude_disk_patterns", "ALTER TABLE config ADD COLUMN exclude_disk_patterns VARCHAR DEFAULT 'fcd/'"),
+            ("interval_hours", "ALTER TABLE vms ADD COLUMN interval_hours INTEGER DEFAULT 0"),
         ]
         
         from logger_util import log_info, log_warn

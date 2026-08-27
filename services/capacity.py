@@ -34,6 +34,34 @@ WARN_THRESHOLD = 0.8
 _GB = 1024 ** 3
 
 
+def _measured_full_gb(storage, vm_name):
+    """Allocated size (GB) of the VM's most recent full point, or None.
+
+    A measured full beats committed×FULL_RATIO: sparse-aware transports write
+    far less than committed size, and the difference dominates the projection.
+    """
+    base = getattr(storage, "base_path", None)
+    if not base:
+        return None
+    try:
+        chain = bm.load_chain(storage, vm_name)
+        if not chain:
+            return None
+        fulls = [p for p in chain.get("points", []) if p.get("type") == "full"]
+        if not fulls:
+            return None
+        point_dir = os.path.join(base, vm_name, bm.CHAIN_DIR, "points", fulls[-1]["id"])
+        if not os.path.isdir(point_dir):
+            return None
+        total = 0
+        for name in os.listdir(point_dir):
+            st = os.stat(os.path.join(point_dir, name))
+            total += st.st_blocks * 512
+        return (total / _GB) if total > 0 else None
+    except Exception:
+        return None
+
+
 def _measured_daily_delta_gb(storage, vm_name):
     """Average size (GB) of the VM's most recent incremental deltas, or None.
 
@@ -93,13 +121,19 @@ def project_usage(db, config, selection=None):
             continue
         committed_gb = float(vm.storage_gb or 0)
         retention = max(int(vm.retention_count or 7), 1)
-        full_gb = committed_gb * FULL_RATIO
+        measured_full = _measured_full_gb(storage, vm.vm_name) if storage else None
+        full_gb = measured_full if measured_full is not None else committed_gb * FULL_RATIO
         measured = _measured_daily_delta_gb(storage, vm.vm_name) if storage else None
         if measured is not None:
             delta_gb = measured
             measured_count += 1
         else:
+            # DELTA_FALLBACK_PCT models a day's churn; a VM backed up every
+            # N hours dirties roughly N/24 of that per run.
             delta_gb = committed_gb * DELTA_FALLBACK_PCT
+            if getattr(vm, "schedule_frequency", "") == "interval":
+                hours = max(int(getattr(vm, "interval_hours", 0) or 6), 1)
+                delta_gb *= min(hours / 24.0, 1.0)
         projected = 2 * full_gb + retention * delta_gb
         total_gb += projected
         rows.append({
@@ -107,6 +141,7 @@ def project_usage(db, config, selection=None):
             "vm_name": vm.vm_name,
             "committed_gb": round(committed_gb, 1),
             "projected_gb": round(projected, 1),
+            "full_source": "measured" if measured_full is not None else "estimated",
             "delta_source": "measured" if measured is not None else "estimated",
         })
 

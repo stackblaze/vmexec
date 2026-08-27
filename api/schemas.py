@@ -91,6 +91,7 @@ class StorageConfigUpdate(BaseModel):
     vddk_libdir: Optional[str] = None
     cbt_enabled: Optional[bool] = None
     cbt_full_interval: Optional[int] = None
+    exclude_disk_patterns: Optional[str] = None
     retention_mode: Optional[str] = None
     gfs_daily_keep: Optional[int] = None
     gfs_weekly_keep: Optional[int] = None
@@ -131,6 +132,7 @@ class ConfigResponse(BaseModel):
     vddk_libdir: str
     cbt_enabled: bool = True
     cbt_full_interval: int = 7
+    exclude_disk_patterns: str = "fcd/"
     retention_mode: str = "count"
     gfs_daily_keep: int = 7
     gfs_weekly_keep: int = 4
@@ -181,6 +183,7 @@ class ConfigUpdate(BaseModel):
     vddk_libdir: Optional[str] = None
     cbt_enabled: Optional[bool] = None
     cbt_full_interval: Optional[int] = None
+    exclude_disk_patterns: Optional[str] = None
     smtp_server: Optional[str] = None
     smtp_port: Optional[int] = None
     smtp_user: Optional[str] = None
@@ -229,6 +232,7 @@ class VmUpdate(BaseModel):
     cbt_enabled: Optional[bool] = None
     schedule_frequency: Optional[str] = None
     schedule_days: Optional[str] = None
+    interval_hours: Optional[int] = None
 
 
 class InventorySelectionItem(BaseModel):
@@ -262,6 +266,7 @@ class VmResponse(BaseModel):
     is_job_active: bool
     schedule_frequency: str
     schedule_days: str
+    interval_hours: int = 0
     last_backup: Optional[str]
     last_backup_duration: int = 0
     last_status: str
@@ -418,3 +423,47 @@ class OverviewResponse(BaseModel):
     active_restores: List[RestoreResponse]
     attention: List[OverviewAttentionItem]
     setup_incomplete: bool
+
+
+class K8sClusterCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=64)
+    kubeconfig: str
+    targets: list = []  # [{name, profile, namespace, selector, ...}]
+
+
+class K8sClusterUpdate(BaseModel):
+    kubeconfig: Optional[str] = None
+    targets: Optional[list] = None
+    schedule_hour: Optional[int] = None
+    schedule_minute: Optional[int] = None
+    schedule_frequency: Optional[str] = None
+    interval_hours: Optional[int] = None
+    retention_count: Optional[int] = None
+    is_job_active: Optional[bool] = None
+
+
+class K8sClusterResponse(BaseModel):
+    id: int
+    name: str
+    targets: list
+    schedule_hour: int
+    schedule_minute: int
+    schedule_frequency: str
+    interval_hours: int
+    retention_count: int
+    is_job_active: bool
+    last_backup: Optional[str] = None
+    last_status: str = "Never"
+    current_action: str = ""
+
+
+class K3sS3Config(BaseModel):
+    endpoint: str
+    access_key: str
+    secret_key: str
+    bucket: str
+    folder: Optional[str] = "etcd"
+    region: Optional[str] = "us-east-1"
+    schedule_cron: Optional[str] = "0 */6 * * *"
+    local_retention: Optional[int] = 10
+    s3_retention: Optional[int] = 28

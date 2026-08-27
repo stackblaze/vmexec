@@ -540,6 +540,10 @@
     left: calc(var(--spacing) * .5);
   }
 
+  .z-40 {
+    z-index: 40;
+  }
+
   .z-50 {
     z-index: 50;
   }
@@ -622,6 +626,10 @@
 
   .mt-auto {
     margin-top: auto;
+  }
+
+  .mr-1 {
+    margin-right: var(--spacing);
   }
 
   .mb-0 {
@@ -873,6 +881,14 @@
     width: calc(var(--spacing) * 28);
   }
 
+  .w-40 {
+    width: calc(var(--spacing) * 40);
+  }
+
+  .w-44 {
+    width: calc(var(--spacing) * 44);
+  }
+
   .w-52 {
     width: calc(var(--spacing) * 52);
   }
@@ -1027,6 +1043,10 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .grid-cols-3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .grid-cols-4 {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
@@ -1113,6 +1133,12 @@
 
   .gap-\[0\.15rem\] {
     gap: .15rem;
+  }
+
+  :where(.space-y-0\.5 > :not(:last-child)) {
+    --tw-space-y-reverse: 0;
+    margin-block-start: calc(calc(var(--spacing) * .5) * var(--tw-space-y-reverse));
+    margin-block-end: calc(calc(var(--spacing) * .5) * calc(1 - var(--tw-space-y-reverse)));
   }
 
   :where(.space-y-2 > :not(:last-child)) {
@@ -1499,6 +1525,16 @@
   @supports (color: color-mix(in lab, red, red)) {
     .bg-black\/45 {
       background-color: color-mix(in oklab, var(--color-black) 45%, transparent);
+    }
+  }
+
+  .bg-black\/50 {
+    background-color: #00000080;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .bg-black\/50 {
+      background-color: color-mix(in oklab, var(--color-black) 50%, transparent);
     }
   }
 
@@ -2033,6 +2069,10 @@
     font-size: .7rem;
   }
 
+  .text-\[0\.65rem\] {
+    font-size: .65rem;
+  }
+
   .text-\[0\.625rem\] {
     font-size: .625rem;
   }
@@ -2361,6 +2401,11 @@
     box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);
   }
 
+  .shadow-xl {
+    --tw-shadow: 0 20px 25px -5px var(--tw-shadow-color, #0000001a), 0 8px 10px -6px var(--tw-shadow-color, #0000001a);
+    box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);
+  }
+
   .filter {
     filter: var(--tw-blur, ) var(--tw-brightness, ) var(--tw-contrast, ) var(--tw-grayscale, ) var(--tw-hue-rotate, ) var(--tw-invert, ) var(--tw-saturate, ) var(--tw-sepia, ) var(--tw-drop-shadow, );
   }
@@ -2595,6 +2640,16 @@
 
     .hover\:bg-card:hover {
       background-color: var(--bg-card);
+    }
+
+    .hover\:bg-nav\/50:hover {
+      background-color: var(--bg-nav);
+    }
+
+    @supports (color: color-mix(in lab, red, red)) {
+      .hover\:bg-nav\/50:hover {
+        background-color: color-mix(in oklab, var(--bg-nav) 50%, transparent);
+      }
     }
 
     .hover\:bg-red-500\/8:hover {
