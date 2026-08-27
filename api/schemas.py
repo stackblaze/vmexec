@@ -244,6 +244,8 @@ class InventoryApplyRequest(BaseModel):
     base_minute: Optional[int] = None
     # Gap between staggered jobs; server clamps to 5-180 minutes.
     interval_minutes: Optional[int] = None
+    # Evaluate the proposed selection's capacity projection without applying.
+    dry_run: bool = False
 
 
 class VmResponse(BaseModel):
@@ -368,6 +370,10 @@ class OverviewStorage(BaseModel):
     disk_free_gb: Optional[float] = None
     disk_free_pct: Optional[float] = None
     scan_error: Optional[str] = None
+    # Projected steady-state usage of all configured jobs (see services/capacity.py)
+    projected_gb: Optional[float] = None
+    projected_pct: Optional[float] = None
+    projection_warn: Optional[bool] = None
 
 
 class OverviewLiveJob(BaseModel):

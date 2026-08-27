@@ -966,6 +966,22 @@ def get_overview(db):
     storage = _cached_storage_scan(config)
     setup_incomplete = len(esxi_hosts) == 0 or len(selected) == 0
 
+    # Projected steady-state usage of the configured jobs vs capacity, so
+    # over-committing the repository is visible before it fills up.
+    try:
+        from services import capacity
+        projection = capacity.project_usage(db, config)
+        storage = dict(storage)
+        storage["projected_gb"] = projection["projected_gb"]
+        cap = storage.get("disk_total_gb")
+        if cap:
+            pct = round(100 * projection["projected_gb"] / cap, 1)
+            storage["projected_pct"] = pct
+            storage["projection_warn"] = pct >= capacity.WARN_THRESHOLD * 100
+    except Exception as e:
+        from logger_util import log_warn
+        log_warn(f"[OVERVIEW] capacity projection failed: {e}")
+
     return {
         "vddk_installed": is_vddk_installed(get_vddk_libdir(config)),
         "protected_count": len(selected),

@@ -265,17 +265,44 @@ def _disconnect_removable_devices(si, vm_name):
     config_spec = vim.vm.ConfigSpec()
     config_spec.deviceChange = changes
 
+    # Best-effort: a connected ISO/floppy does not block snapshots, CBT or
+    # VDDK/NFC streaming, so a refused disconnect must never fail the backup.
+    # Bounded wait: the reconfigure can raise a blocking guest question
+    # (msg.cdromdisconnect.locked) that nothing answers, or retry an IDE
+    # hot-disconnect for minutes before erroring (msg.disk.onlineConnectFail).
     task = vm.ReconfigVM_Task(spec=config_spec)
+    deadline = time.time() + 90
     while task.info.state not in [vim.TaskInfo.State.success,
                                   vim.TaskInfo.State.error]:
+        question = getattr(vm.runtime, "question", None)
+        if question is not None:
+            # Answer with the default choice (keep the guest's lock) so the
+            # task resolves now instead of stalling until vCenter gives up.
+            try:
+                default_idx = question.choice.defaultIndex or 0
+                choice = question.choice.choiceInfo[default_idx].key
+                vm.AnswerVM(questionId=question.id, answerChoice=choice)
+                log_warn(f"[PREFLIGHT] Answered blocking question on {vm_name} "
+                         f"with default choice during device disconnect")
+            except Exception:
+                pass
+        if time.time() > deadline:
+            log_warn(f"[PREFLIGHT] Device disconnect timed out for {vm_name}; "
+                     "continuing — connected removable media does not block backups")
+            try:
+                task.CancelTask()
+            except Exception:
+                pass
+            return True
         time.sleep(2)
 
     if task.info.state == vim.TaskInfo.State.success:
         log_info(f"[PREFLIGHT] Removable devices disconnected for {vm_name}")
-        return True
     else:
-        log_error(f"[PREFLIGHT] Device disconnect failed: {task.info.error}")
-        return False
+        log_warn(f"[PREFLIGHT] Device disconnect refused for {vm_name} "
+                 f"({getattr(task.info.error, 'msg', task.info.error)}); "
+                 "continuing — connected removable media does not block backups")
+    return True
 
 
 # ---------------------------------------------------------------------------

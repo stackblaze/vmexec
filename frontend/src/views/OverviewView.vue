@@ -102,6 +102,16 @@
               <span>·</span>
               <span class="inline-flex items-center gap-1"><span class="w-[0.45rem] h-[0.45rem] rounded-full shrink-0 bg-brand"></span>Backups <strong>{{ data.storage.total_human }}</strong></span>
             </p>
+            <p
+              v-if="data?.storage?.projected_gb != null"
+              class="mt-2 text-center text-[0.7rem] font-medium"
+              :class="data.storage.projection_warn ? 'text-red-500' : (data.storage.projected_pct > 60 ? 'text-amber-500' : 'text-muted')"
+              title="Estimated steady-state size of all scheduled jobs: 2 fulls plus retained daily deltas per VM, from vCenter committed sizes and measured incrementals"
+            >
+              Projected at steady state: <strong>{{ data.storage.projected_gb >= 1000 ? (data.storage.projected_gb / 1000).toFixed(2) + ' TB' : data.storage.projected_gb.toFixed(0) + ' GB' }}</strong>
+              <template v-if="data.storage.projected_pct != null"> of {{ data.storage.disk_total_gb?.toFixed(0) }} GB ({{ data.storage.projected_pct.toFixed(0) }}%)</template>
+              <template v-if="data.storage.projection_warn"> — over capacity</template>
+            </p>
           </div>
           <div v-if="data?.storage?.scan_error" class="mt-3 text-xs text-red-400">{{ data.storage.scan_error }}</div>
         </div>

@@ -75,13 +75,24 @@ class LocalStorageProvider(StorageProvider):
             shutil.rmtree(full_p, ignore_errors=True)
 
     def get_size(self, path):
+        """Size of a file (exact bytes, for streaming) or a directory tree.
+
+        Directory sizes report ALLOCATED bytes (st_blocks), not apparent size:
+        backup flats are sparse, and summing st_size claims far more space
+        than the repository actually holds — a 100 GB disk whose full occupies
+        7 GB on disk must count as 7 GB in listings and storage stats.
+        """
         full_p = self._full_path(path)
         if os.path.isfile(full_p):
             return os.path.getsize(full_p)
         total = 0
         for root, dirs, files in os.walk(full_p):
             for f in files:
-                total += os.path.getsize(os.path.join(root, f))
+                try:
+                    st = os.stat(os.path.join(root, f))
+                    total += st.st_blocks * 512
+                except OSError:
+                    continue
         return total
 
 class S3StorageProvider(StorageProvider):

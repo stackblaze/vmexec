@@ -37,9 +37,10 @@
         <svg class="w-3.5 h-3.5 shrink-0" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6h12v12H6z"/></svg>
         Abort selected
       </button>
-      <button type="button" :class="btnSecondary" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium" @click="pauseSelected">
-        <svg class="w-3.5 h-3.5 shrink-0" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6V5zm8 0h4v14h-4V5z"/></svg>
-        Pause selected
+      <button type="button" :class="btnSecondary" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium" @click="allSelectedPaused ? resumeSelected() : pauseSelected()">
+        <svg v-if="allSelectedPaused" class="w-3.5 h-3.5 shrink-0" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h3v14H5V5zm5 7l9-7v14l-9-7z"/></svg>
+        <svg v-else class="w-3.5 h-3.5 shrink-0" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6V5zm8 0h4v14h-4V5z"/></svg>
+        {{ allSelectedPaused ? 'Resume selected' : 'Pause selected' }}
       </button>
       <button type="button" :class="btnSecondary" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium hover:text-red-500" @click="removeSelected">
         <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
@@ -590,6 +591,13 @@ const sorted = computed(() => {
 })
 
 const allVisibleSelected = computed(() => sorted.value.length > 0 && sorted.value.every((v) => selectedIds.value.has(v.id)))
+
+// One pause/resume toggle: Resume only when every selected VM is paused,
+// otherwise Pause (a mixed selection pauses everything, then offers Resume).
+const allSelectedPaused = computed(() => {
+  const sel = allVms.value.filter((v) => selectedIds.value.has(v.id))
+  return sel.length > 0 && sel.every((v) => v.is_job_active === false)
+})
 const inventoryAllSelected = computed(() => allVms.value.length > 0 && allVms.value.every((v) => v.is_selected))
 const inventoryPendingCount = computed(() => Object.keys(pendingSelection.value).length)
 const inventorySelectionLabel = computed(() => {
@@ -738,6 +746,23 @@ async function pauseSelected() {
   await load()
 }
 
+async function resumeSelected() {
+  const ids = [...selectedIds.value]
+  if (!ids.length) return
+  const ok = await confirm(`Resume scheduled backups for ${ids.length} VM(s)?`, { title: 'Resume selected', confirmText: 'Resume' })
+  if (!ok) return
+  let n = 0
+  for (const id of ids) {
+    try {
+      await jobsApi.patch(id, { is_job_active: true })
+      n++
+    } catch { /* continue */ }
+  }
+  await alert(`Resumed schedules for ${n} VM(s).`, { title: 'Resume selected' })
+  clearSelection()
+  await load()
+}
+
 async function removeSelected() {
   const ids = [...selectedIds.value]
   if (!ids.length) return
@@ -770,7 +795,24 @@ async function applyInventory() {
     vm_id: Number(id),
     is_selected: sel,
   }))
-  if (updates.length) await jobsApi.inventoryApply({ updates, restagger: true })
+  if (updates.length) {
+    // Capacity check first: warn when the proposed jobs project past the
+    // repository's capacity threshold, but let the user proceed.
+    try {
+      const res = await jobsApi.inventoryApply({ updates, restagger: true, dry_run: true })
+      const p = res?.projection
+      if (p?.warn) {
+        const ok = await confirm(
+          `This selection projects to ~${p.projected_gb >= 1000 ? (p.projected_gb / 1000).toFixed(2) + ' TB' : p.projected_gb.toFixed(0) + ' GB'} at steady state`
+          + (p.capacity_gb ? ` on ${p.capacity_gb.toFixed(0)} GB of storage (${p.projected_pct.toFixed(0)}%)` : '')
+          + '. Backups may fill the repository. Continue?',
+          { title: 'Storage capacity', confirmText: 'Apply anyway' },
+        )
+        if (!ok) return
+      }
+    } catch { /* projection is advisory — never block apply on its failure */ }
+    await jobsApi.inventoryApply({ updates, restagger: true })
+  }
   pendingSelection.value = {}
   showInventory.value = false
   await load()

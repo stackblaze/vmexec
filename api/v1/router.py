@@ -434,6 +434,23 @@ def apply_inventory(
     if not body.updates and not body.restagger:
         return {"ok": True, "staggered": False, "selected_count": 0}
     updates = [u.model_dump() for u in body.updates]
+    if body.dry_run:
+        # Capacity projection for the proposed selection, without applying —
+        # lets the UI warn before jobs that overrun the repository are added.
+        from services import capacity
+        config = backup_ops.get_or_create_config(db)
+        selection = {u["vm_id"]: bool(u.get("is_selected")) for u in updates}
+        projection = capacity.project_usage(db, config, selection=selection)
+        scan = backup_ops._cached_storage_scan(config)
+        cap = scan.get("disk_total_gb")
+        if cap:
+            projection["capacity_gb"] = cap
+            projection["projected_pct"] = round(100 * projection["projected_gb"] / cap, 1)
+            projection["warn"] = projection["projected_pct"] >= capacity.WARN_THRESHOLD * 100
+        else:
+            projection["capacity_gb"] = None
+            projection["warn"] = False
+        return {"ok": True, "dry_run": True, "projection": projection}
     return backup_ops.apply_inventory_selections(
         db, updates, restagger=body.restagger,
         base_hour=body.base_hour, base_minute=body.base_minute,
