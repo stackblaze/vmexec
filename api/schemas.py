@@ -432,6 +432,7 @@ class K8sClusterCreate(BaseModel):
 
 
 class K8sClusterUpdate(BaseModel):
+    name: Optional[str] = None
     kubeconfig: Optional[str] = None
     targets: Optional[list] = None
     schedule_hour: Optional[int] = None

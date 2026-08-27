@@ -244,6 +244,29 @@
           </div>
         </div>
 
+        <!-- Kubernetes -->
+        <div v-else-if="panel === 'kubernetes'">
+          <h2 class="text-[1.375rem] font-bold mb-1">Kubernetes</h2>
+          <p class="text-sm text-muted mb-4">Clusters registered for state-level backups (etcd / datastore snapshots, per-tenant exports).</p>
+          <div class="bg-card border border-border rounded-lg shadow-card overflow-hidden">
+            <div class="flex items-center justify-between gap-3 py-3 px-5 border-b border-border bg-nav">
+              <span class="font-semibold text-sm">Registered clusters</span>
+              <button type="button" class="inline-flex items-center justify-center gap-1.5 rounded-md border-0 bg-brand px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-hover" @click="router.push('/kubernetes')">Manage in Kubernetes tab</button>
+            </div>
+            <div v-if="!clusters.length" class="p-8 text-center text-sm text-muted">No clusters registered. Add one from the Kubernetes tab.</div>
+            <div v-for="c in clusters" :key="c.id" class="flex justify-between items-center px-5 py-3 border-b border-border">
+              <div>
+                <div class="font-medium">{{ c.name }}</div>
+                <div class="text-xs font-mono text-brand">
+                  {{ (c.targets || []).map((t) => t.name).join(', ') || 'no targets' }}
+                  · {{ c.schedule_frequency === 'interval' ? `every ${c.interval_hours}h` : 'daily' }} · keep {{ c.retention_count }}
+                </div>
+              </div>
+              <div class="text-xs" :class="c.last_status === 'Success' ? 'text-emerald-500' : (c.last_status === 'Failed' ? 'text-red-500' : 'text-muted')">{{ c.last_status }}</div>
+            </div>
+          </div>
+        </div>
+
         <!-- Email -->
         <div v-else-if="panel === 'email'">
           <h2 class="text-[1.375rem] font-bold mb-1">Email (SMTP)</h2>
@@ -508,7 +531,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { configApi, hostsApi, usersApi, logsApi } from '@/api/client'
+import { configApi, hostsApi, usersApi, logsApi, k8sApi } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useSetupWizard } from '@/composables/useSetupWizard'
 import { useModal } from '@/composables/useModal'
@@ -524,6 +547,7 @@ const { confirm, alert } = useModal()
 const panel = computed(() => props.panel || route.params.panel || 'storage')
 const cfg = ref({ secondary_storage_type: 'NFS' })
 const hosts = ref([])
+const clusters = ref([])
 const users = ref([])
 const logs = ref({ service_log: '', worker_log: '' })
 const msg = ref('')
@@ -554,6 +578,7 @@ const panels = computed(() => {
   const all = [
     { id: 'storage', label: 'Storage' },
     { id: 'hosts', label: 'ESXi' },
+    { id: 'kubernetes', label: 'Kubernetes' },
     { id: 'engine', label: 'Engine' },
     { id: 'email', label: 'SMTP' },
     { id: 'users', label: 'Users' },
@@ -570,6 +595,7 @@ async function load() {
     cfg.value = await configApi.get()
     if (!cfg.value.secondary_storage_type) cfg.value.secondary_storage_type = 'NFS'
     hosts.value = await hostsApi.list()
+    try { clusters.value = await k8sApi.list() } catch (e) { clusters.value = [] }
     if (panel.value === 'users') users.value = await usersApi.list()
   }
   if (panel.value === 'syslogs') {
@@ -650,6 +676,7 @@ async function submitAddHost() {
     stopHostProgress(100)
     hostAddResult.value = host
     hosts.value = await hostsApi.list()
+    try { clusters.value = await k8sApi.list() } catch (e) { clusters.value = [] }
     msg.value = `Registered ${host.name}.`
     msgOk.value = true
   } catch (e) {

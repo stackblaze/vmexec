@@ -275,32 +275,44 @@ def get_active_backup_vm_ids():
         return set(_active_backup_vm_ids)
 
 
-def perform_k8s_backup(cluster_id: int):
-    """Snapshot all etcd targets of a registered Kubernetes cluster."""
+def perform_k8s_backup(cluster_id: int, target_name=None):
+    """Snapshot a Kubernetes cluster. target_name=None runs all targets
+    (manual 'run all'); a name runs just that target (scheduled per-target job)."""
     db = SessionLocal()
+    label = target_name or "all targets"
     try:
         cluster = db.query(K8sCluster).filter(K8sCluster.id == cluster_id).first()
         if not cluster:
             return
         config = db.query(Config).first()
-        cluster.current_action = "Snapshotting..."
+        cluster.current_action = f"Snapshotting {label}..."
         db.commit()
         from services import k8s_backup
         storage = storage_util.get_storage(config)
-        ok, msg = k8s_backup.run_cluster_backup(db, cluster, storage)
+        ok, msg = k8s_backup.run_cluster_backup(db, cluster, storage,
+                                                only_target=target_name)
+        if ok and getattr(config, "secondary_copy_enabled", False):
+            try:
+                from secondary_copy import sync_after_backup
+                copy_ok, copy_msg = sync_after_backup(
+                    config, storage, f"k8s/{cluster.name}")
+                if not copy_ok:
+                    log_warn(f"[K8S] secondary copy failed: {copy_msg}")
+            except Exception as e:
+                log_warn(f"[K8S] secondary copy error: {e}")
         cluster.last_status = "Success" if ok else "Failed"
         cluster.last_backup = datetime.datetime.utcnow()
         cluster.current_action = ""
-        db.add(BackupLog(vm_name=f"k8s:{cluster.name}",
+        db.add(BackupLog(vm_name=f"k8s:{cluster.name}:{label}",
                          status=cluster.last_status, message=msg))
         db.commit()
-        log_info(f"[K8S] {cluster.name}: {cluster.last_status} — {msg}")
+        log_info(f"[K8S] {cluster.name}/{label}: {cluster.last_status} — {msg}")
     except Exception as e:
         log_error(f"[K8S] cluster {cluster_id} backup error: {e}")
         try:
             cluster.last_status = "Failed"
             cluster.current_action = ""
-            db.add(BackupLog(vm_name=f"k8s:{cluster.name}",
+            db.add(BackupLog(vm_name=f"k8s:{cluster.name}:{label}",
                              status="Failed", message=str(e)[:300]))
             db.commit()
         except Exception:
@@ -309,8 +321,8 @@ def perform_k8s_backup(cluster_id: int):
         db.close()
 
 
-def queue_k8s_backup(cluster_id: int):
-    backup_queue_executor.submit(perform_k8s_backup, cluster_id)
+def queue_k8s_backup(cluster_id: int, target_name=None):
+    backup_queue_executor.submit(perform_k8s_backup, cluster_id, target_name)
 
 
 def queue_backup(vm_id: int):
@@ -809,18 +821,31 @@ def start_scheduler():
             day_label = ','.join(day_names[int(d)] for d in days.split(',') if d.strip().isdigit())
         log_info(f"Scheduled job {job_id} for {vm.vm_name} at {vm.schedule_hour:02d}:{vm.schedule_minute:02d} ({freq}: {day_label})")
     
-    # Kubernetes state-backup jobs (etcd/datastore snapshots)
+    # Kubernetes state-backup jobs — ONE per target, so each snapshot runs
+    # independently on its own schedule and a slow/failing target never blocks
+    # the others. A target inherits the cluster schedule unless it overrides.
+    import json as _json
     clusters = db.query(K8sCluster).filter(K8sCluster.is_job_active == True).all()
     for cl in clusters:
-        cron_kwargs = dict(hour=cl.schedule_hour, minute=cl.schedule_minute)
-        if (cl.schedule_frequency or 'interval') == 'interval':
-            n = max(1, min(12, int(cl.interval_hours or 1)))
-            cron_kwargs['hour'] = f"{cl.schedule_hour % n}/{n}"
-        scheduler.add_job(
-            queue_k8s_backup, 'cron', **cron_kwargs,
-            args=[cl.id], id=f"k8sbackup_{cl.id}", misfire_grace_time=60,
-        )
-        log_info(f"Scheduled k8s snapshot job for cluster {cl.name} ({cron_kwargs})")
+        for idx, tgt in enumerate(_json.loads(cl.targets or "[]")):
+            if tgt.get("is_job_active") is False:
+                continue
+            freq = tgt.get("schedule_frequency") or cl.schedule_frequency or "interval"
+            hour = tgt.get("schedule_hour")
+            hour = cl.schedule_hour if hour is None else int(hour)
+            minute = tgt.get("schedule_minute")
+            minute = cl.schedule_minute if minute is None else int(minute)
+            cron_kwargs = dict(hour=hour, minute=minute)
+            if freq == "interval":
+                n = max(1, min(12, int(tgt.get("interval_hours") or cl.interval_hours or 1)))
+                cron_kwargs["hour"] = f"{hour % n}/{n}"
+            tname = tgt.get("name") or f"target{idx}"
+            scheduler.add_job(
+                queue_k8s_backup, "cron", **cron_kwargs,
+                args=[cl.id, tname], id=f"k8sbackup_{cl.id}_{idx}",
+                misfire_grace_time=60,
+            )
+            log_info(f"Scheduled k8s snapshot job {cl.name}/{tname} ({cron_kwargs})")
 
     if not scheduler.running:
         scheduler.start()

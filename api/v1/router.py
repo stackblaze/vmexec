@@ -685,6 +685,15 @@ def update_k8s_cluster(
     if not c:
         raise HTTPException(status_code=404, detail="cluster not found")
     data = body.model_dump(exclude_unset=True)
+    if data.get("name") and data["name"].strip() != c.name:
+        new_name = data["name"].strip()
+        if db.query(K8sCluster).filter(K8sCluster.name == new_name,
+                                       K8sCluster.id != cluster_id).first():
+            raise HTTPException(status_code=409, detail="cluster name already in use")
+        # Storage chains are keyed by cluster name, so a rename must move the
+        # existing snapshot tree (primary + secondary) or it orphans the data.
+        _rename_k8s_storage(db, c.name, new_name)
+        c.name = new_name
     if "targets" in data and data["targets"] is not None:
         for t in data["targets"]:
             try:
@@ -704,6 +713,86 @@ def update_k8s_cluster(
     return K8sClusterResponse(**_k8s_to_dict(c))
 
 
+def _rename_k8s_storage(db, old_name, new_name):
+    """Move k8s/<old_name> → k8s/<new_name> on primary and secondary storage
+    so a cluster rename keeps its snapshot chains."""
+    import storage_util
+    cfg = backup_ops.get_or_create_config(db)
+    for storage in (storage_util.get_storage(cfg),
+                    storage_util.get_secondary_storage(cfg)):
+        if not storage:
+            continue
+        old_rel, new_rel = f"k8s/{old_name}", f"k8s/{new_name}"
+        try:
+            if hasattr(storage, "base_path"):
+                import os
+                src = os.path.join(storage.base_path, old_rel)
+                dst = os.path.join(storage.base_path, new_rel)
+                if os.path.isdir(src) and not os.path.exists(dst):
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    os.rename(src, dst)
+            # Object stores have no server-side rename; the next scheduled
+            # snapshot recreates the chain under the new name, and the
+            # secondary sync re-uploads it. Old-name objects remain until
+            # a lifecycle rule or manual cleanup removes them.
+        except Exception:
+            pass  # never block a rename on storage move; chains re-create if missing
+
+
+def _rename_k8s_job_storage(db, cluster_name, old_job, new_job):
+    """Move k8s/<cluster>/<old_job> → <new_job> on primary + secondary."""
+    import os
+    import storage_util
+    cfg = backup_ops.get_or_create_config(db)
+    for storage in (storage_util.get_storage(cfg),
+                    storage_util.get_secondary_storage(cfg)):
+        if not storage or not hasattr(storage, "base_path"):
+            continue
+        src = os.path.join(storage.base_path, "k8s", cluster_name, old_job)
+        dst = os.path.join(storage.base_path, "k8s", cluster_name, new_job)
+        try:
+            if os.path.isdir(src) and not os.path.exists(dst):
+                os.rename(src, dst)
+        except Exception:
+            pass
+
+
+@router.patch("/k8s/clusters/{cluster_id}/targets/{target_name}")
+def update_k8s_target(
+    cluster_id: int,
+    target_name: str,
+    body: dict,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_api_role("admin")),
+):
+    """Update one target's schedule/retention (per-target scheduling)."""
+    c = db.query(K8sCluster).filter(K8sCluster.id == cluster_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="cluster not found")
+    targets = _json.loads(c.targets or "[]")
+    tgt = next((t for t in targets if t.get("name") == target_name), None)
+    if tgt is None:
+        raise HTTPException(status_code=404, detail="target not found")
+    if body.get("name") and body["name"].strip() != target_name:
+        new_name = body["name"].strip()
+        if any(t.get("name") == new_name for t in targets):
+            raise HTTPException(status_code=409, detail="a job with that name already exists")
+        # Non-tenant jobs store a chain at k8s/<cluster>/<job>; move it so the
+        # rename keeps its snapshots. (tenants jobs key paths by tenant name.)
+        if tgt.get("profile") != "tenants":
+            _rename_k8s_job_storage(db, c.name, target_name, new_name)
+        tgt["name"] = new_name
+    for field in ("schedule_frequency", "interval_hours", "schedule_hour",
+                  "schedule_minute", "retention_count", "is_job_active"):
+        if field in body and body[field] is not None:
+            tgt[field] = body[field]
+    if tgt.get("schedule_frequency") == "interval" and tgt.get("interval_hours"):
+        tgt["interval_hours"] = max(1, min(12, int(tgt["interval_hours"])))
+    c.targets = _json.dumps(targets)
+    db.commit()
+    return {"ok": True, "target": tgt}
+
+
 @router.delete("/k8s/clusters/{cluster_id}")
 def delete_k8s_cluster(
     cluster_id: int,
@@ -721,15 +810,35 @@ def delete_k8s_cluster(
 @router.post("/k8s/clusters/{cluster_id}/run")
 def run_k8s_backup(
     cluster_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     user: User = Depends(require_api_role("admin", "operator")),
 ):
     c = db.query(K8sCluster).filter(K8sCluster.id == cluster_id).first()
     if not c:
         raise HTTPException(status_code=404, detail="cluster not found")
-    c.current_action = "PENDING_RUN"
+    target = request.query_params.get("target") if request else None
+    c.current_action = f"PENDING_RUN:{target}" if target else "PENDING_RUN"
     db.commit()
-    return {"ok": True, "message": "Snapshot queued"}
+    return {"ok": True, "message": f"Snapshot queued ({target or 'all targets'})"}
+
+
+@router.get("/k8s/clusters/{cluster_id}/tenants")
+def list_k8s_tenants(
+    cluster_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_api_user),
+):
+    """Discover Kamaji TenantControlPlanes for the single-tenant job picker."""
+    from services import k8s_backup
+    c = db.query(K8sCluster).filter(K8sCluster.id == cluster_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="cluster not found")
+    try:
+        core = k8s_backup._clients(c.kubeconfig)
+        return {"tenants": [t["name"] for t in k8s_backup.discover_tenants(core)]}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"cluster unreachable: {str(e)[:200]}")
 
 
 @router.post("/k8s/clusters/{cluster_id}/test")
@@ -830,6 +939,41 @@ def k3s_apply_s3(
             raise HTTPException(status_code=422,
                                 detail="no k3s embedded-etcd nodes detected on this cluster")
         return k8s_backup.k3s_apply_s3(core, body.model_dump())
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"apply failed: {str(e)[:200]}")
+
+
+@router.post("/k8s/clusters/{cluster_id}/k3s-s3/from-secondary")
+def k3s_apply_s3_from_secondary(
+    cluster_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_api_role("admin")),
+):
+    """Apply the k3s snapshot S3 Secret using the secondary-copy credentials
+    already stored (encrypted) in VMExec config — keys never leave the server."""
+    from services import k8s_backup
+    c = db.query(K8sCluster).filter(K8sCluster.id == cluster_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="cluster not found")
+    cfg = backup_ops.get_or_create_config(db)
+    if not getattr(cfg, "secondary_copy_enabled", False) or             (cfg.secondary_storage_type or "").upper() != "S3" or not cfg.secondary_s3_bucket:
+        raise HTTPException(status_code=422,
+                            detail="secondary copy is not configured for S3")
+    try:
+        core = k8s_backup._clients(c.kubeconfig)
+        if not k8s_backup.k3s_detect(core):
+            raise HTTPException(status_code=422, detail="no k3s etcd nodes detected")
+        endpoint = (cfg.secondary_s3_endpoint or "").removeprefix("https://").removeprefix("http://")
+        return k8s_backup.k3s_apply_s3(core, {
+            "endpoint": endpoint,
+            "access_key": cfg.secondary_s3_access_key,
+            "secret_key": cfg.secondary_s3_secret_key,
+            "bucket": cfg.secondary_s3_bucket,
+            "folder": f"k3s-etcd/{c.name}",
+            "region": cfg.secondary_s3_region or "us-east-1",
+        })
     except HTTPException:
         raise
     except Exception as e:

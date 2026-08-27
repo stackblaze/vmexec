@@ -13,6 +13,7 @@ const routes = [
       { path: 'backup', name: 'backup', component: () => import('@/views/JobsView.vue') },
       { path: 'restore', name: 'restore', component: () => import('@/views/RestoreView.vue') },
       { path: 'kubernetes', name: 'kubernetes', component: () => import('@/views/K8sView.vue') },
+      { path: 'kubernetes/:id', name: 'kubernetes-cluster', component: () => import('@/views/K8sClusterView.vue'), props: true },
       { path: 'settings/:panel?', name: 'settings', component: () => import('@/views/SettingsView.vue'), props: true },
       { path: 'account/:panel?', name: 'account', component: () => import('@/views/AccountView.vue'), props: true },
     ],

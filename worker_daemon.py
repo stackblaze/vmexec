@@ -50,9 +50,10 @@ def get_schedule_hash():
              for v in vms]
         )
         clusters = db.query(K8sCluster).all()
+        # Include targets JSON so per-target schedule edits reschedule live.
         state_str += "".join(
             [f"|k8s{c.id}:{c.schedule_hour}:{c.schedule_minute}:{c.is_job_active}:"
-             f"{c.schedule_frequency}:{c.interval_hours}" for c in clusters]
+             f"{c.schedule_frequency}:{c.interval_hours}:{c.targets}" for c in clusters]
         )
         return hashlib.md5(state_str.encode()).hexdigest()
     finally:
@@ -138,12 +139,18 @@ def run_daemon():
                 # Submit to worker thread pool
                 worker.queue_backup(vm.id)
                 
-            # 2b. Manual K8s snapshot requests
-            for cl in db.query(K8sCluster).filter(K8sCluster.current_action == "PENDING_RUN").all():
-                log_info(f"[PID {pid}] Manual k8s snapshot request for cluster: {cl.name}")
+            # 2b. Manual K8s snapshot requests. current_action == "PENDING_RUN"
+            # runs all targets; "PENDING_RUN:<target>" runs just that one.
+            for cl in db.query(K8sCluster).filter(
+                    K8sCluster.current_action.like("PENDING_RUN%")).all():
+                tgt = None
+                if (cl.current_action or "").startswith("PENDING_RUN:"):
+                    tgt = cl.current_action.split(":", 1)[1]
+                log_info(f"[PID {pid}] Manual k8s snapshot request: "
+                         f"{cl.name}/{tgt or 'all'}")
                 cl.current_action = "Queued..."
                 db.commit()
-                worker.queue_k8s_backup(cl.id)
+                worker.queue_k8s_backup(cl.id, tgt)
 
             # 3. Poll for Manual Stop Requests ("PENDING_STOP")
             pending_stops = db.query(VM).filter(VM.current_action == "PENDING_STOP").all()

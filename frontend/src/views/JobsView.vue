@@ -158,17 +158,10 @@
                 >
                   <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
                 </button>
-                <div class="relative inline-block" data-schedule-menu>
-                  <button type="button" :class="btnIconSecondary" title="Schedule settings" @click="toggleScheduleMenu(vm.id)">
+                <div class="inline-block" data-schedule-menu>
+                  <button type="button" :class="btnIconSecondary" title="Schedule settings" @click="toggleScheduleMenu(vm.id, $event)">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                   </button>
-                  <div
-                    v-if="openScheduleId === vm.id"
-                    class="absolute right-0 top-[calc(100%+0.35rem)] z-60 min-w-[15.5rem] max-w-[17rem] p-3 rounded-lg border border-border bg-card shadow-[0_10px_28px_rgba(0,0,0,0.16)] text-left"
-                  >
-                    <div class="text-[0.6875rem] font-bold uppercase tracking-wider text-muted mb-2 pb-1.5 border-b border-border">Schedule</div>
-                    <JobSchedulePopover :vm="vm" @updated="onVmUpdated" />
-                  </div>
                 </div>
                 <button type="button" :class="btnIconSecondary" class="hover:text-red-500" title="Remove from tasks" @click="removeVm(vm)">
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
@@ -367,6 +360,19 @@
         </div>
       </aside>
     </div>
+
+    <!-- Schedule popover (teleported to escape table overflow clipping) -->
+    <Teleport to="body">
+      <div
+        v-if="schedMenu"
+        data-schedule-menu
+        class="fixed z-[90] w-[16rem] p-3 rounded-lg border border-border bg-card shadow-[0_10px_28px_rgba(0,0,0,0.16)] text-left"
+        :style="{ top: schedMenu.y + 'px', left: schedMenu.x + 'px' }"
+      >
+        <div class="text-[0.6875rem] font-bold uppercase tracking-wider text-muted mb-2 pb-1.5 border-b border-border">Schedule</div>
+        <JobSchedulePopover :vm="schedMenu.vm" @updated="onVmUpdated" />
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -406,6 +412,7 @@ const selectedIds = ref(new Set())
 const sortKey = ref('schedule')
 const sortDir = ref('asc')
 const openScheduleId = ref(null)
+const schedMenu = ref(null)  // { vm, x, y } — teleported popover position
 const selectAllRef = ref(null)
 const detailVm = ref(null)
 const detailLogs = ref([])
@@ -635,8 +642,14 @@ function clearSelection() {
   selectedIds.value = new Set()
 }
 
-function toggleScheduleMenu(id) {
+function toggleScheduleMenu(id, ev) {
   openScheduleId.value = openScheduleId.value === id ? null : id
+  if (openScheduleId.value === null) { schedMenu.value = null; return }
+  const vm = allVms.value.find((v) => v.id === id)
+  const rect = ev.currentTarget.getBoundingClientRect()
+  const width = 256
+  const x = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8))
+  schedMenu.value = { vm, x, y: rect.bottom + 6 }
 }
 
 function onVmUpdated(updated) {
@@ -820,7 +833,10 @@ async function applyInventory() {
 }
 
 function onDocClick(e) {
-  if (!e.target.closest('[data-schedule-menu]')) openScheduleId.value = null
+  if (!e.target.closest('[data-schedule-menu]')) {
+    openScheduleId.value = null
+    schedMenu.value = null
+  }
 }
 
 onMounted(() => {

@@ -86,10 +86,14 @@ export const k8sApi = {
   patch: (id, body) => api(`/k8s/clusters/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   remove: (id) => api(`/k8s/clusters/${id}`, { method: 'DELETE' }),
   run: (id) => api(`/k8s/clusters/${id}/run`, { method: 'POST' }),
+  runTarget: (id, name) => api(`/k8s/clusters/${id}/run?target=${encodeURIComponent(name)}`, { method: 'POST' }),
+  patchTarget: (id, name, body) => api(`/k8s/clusters/${id}/targets/${encodeURIComponent(name)}`, { method: 'PATCH', body: JSON.stringify(body) }),
   test: (id) => api(`/k8s/clusters/${id}/test`, { method: 'POST' }),
   backups: (id) => api(`/k8s/clusters/${id}/backups`),
+  tenants: (id) => api(`/k8s/clusters/${id}/tenants`),
   k3sStatus: (id) => api(`/k8s/clusters/${id}/k3s-status`),
   k3sApplyS3: (id, body) => api(`/k8s/clusters/${id}/k3s-s3`, { method: 'POST', body: JSON.stringify(body) }),
+  k3sApplyS3FromSecondary: (id) => api(`/k8s/clusters/${id}/k3s-s3/from-secondary`, { method: 'POST' }),
 }
 
 export const overviewApi = {

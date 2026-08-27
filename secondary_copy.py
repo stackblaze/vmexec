@@ -42,10 +42,20 @@ def get_secondary_storage(config):
 
 
 def _copy_dir_recursive(primary, secondary, rel_path):
-    """Recursively copy a directory tree via storage providers."""
+    """Recursively copy a directory tree via storage providers.
+
+    Files already present on the secondary with a matching size are skipped —
+    hourly K8s state syncs re-walk the same tree and must not re-upload
+    hundreds of MB of unchanged snapshots every run."""
     secondary.makedirs(rel_path)
     for fn in primary.list_files(rel_path) or []:
         src_rel = f"{rel_path.rstrip('/')}/{fn}"
+        try:
+            if secondary.exists(src_rel) and \
+                    secondary.get_size(src_rel) == primary.get_size(src_rel):
+                continue
+        except Exception:
+            pass  # unknown state → copy
         with primary.open_read(src_rel) as src, secondary.open_write(src_rel) as dst:
             shutil.copyfileobj(src, dst)
     for subdir in primary.list_dirs(rel_path) or []:

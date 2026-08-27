@@ -78,6 +78,11 @@ PROFILES = {
     "tenants": {
         "mode": "tenants",
     },
+    # Single named tenant: one job = one TenantControlPlane, exported into its
+    # own chain. Requires a "tenant" field (the TCP name).
+    "tenant": {
+        "mode": "tenant",
+    },
     "custom": {},
 }
 
@@ -98,6 +103,8 @@ def resolve_target(target):
     merged.setdefault("mode", "exec")
     if merged["mode"] == "tenants":
         required = ["name"]
+    elif merged["mode"] == "tenant":
+        required = ["name", "tenant"]
     elif merged["mode"] == "pod":
         required = ["name", "namespace", "endpoint",
                     "cacert", "cert", "key", "helper_image", "xfer_image"]
@@ -341,32 +348,54 @@ def prune_chain(storage, name, retention_count):
         log_info(f"[K8S] {name}: pruned {len(excess)} point(s), keep {keep}")
 
 
-def run_cluster_backup(db, cluster, storage):
-    """Snapshot every target of a cluster. Returns (ok, message)."""
+def target_retention(target, cluster):
+    """Per-target retention, falling back to the cluster default."""
+    r = target.get("retention_count")
+    return int(r) if r else int(cluster.retention_count or 48)
+
+
+def run_one_target(db, cluster, storage, target):
+    """Snapshot a single target. Returns (ok, message). Each target is its own
+    job — one slow or failing target never blocks the others."""
+    core = _clients(cluster.kubeconfig)
+    retention = target_retention(target, cluster)
+    try:
+        t = resolve_target(target)
+        if t["mode"] == "tenants":
+            done = snapshot_tenants(core, cluster.name, storage, retention)
+            return True, f"{len(done)} tenant export(s) stored"
+        if t["mode"] == "tenant":
+            point = snapshot_one_tenant(core, cluster.name, t["name"],
+                                        t["tenant"], storage, retention)
+            return True, f"tenant {t['tenant']} exported ({point})"
+        point = snapshot_target(core, cluster.name, target, storage, retention)
+        return True, f"snapshot {point} stored"
+    except Exception as e:
+        log_error(f"[K8S] {cluster.name}/{target.get('name')}: {e}")
+        return False, str(e)[:200]
+
+
+def run_cluster_backup(db, cluster, storage, only_target=None):
+    """Snapshot targets of a cluster. With only_target, runs just that one
+    (the scheduler fires one job per target); otherwise all (manual 'run all').
+    Returns (ok, message)."""
     targets = json.loads(cluster.targets or "[]")
+    if only_target is not None:
+        targets = [t for t in targets if t.get("name") == only_target]
+        if not targets:
+            return False, f"target '{only_target}' not found"
     if not targets:
         return False, "no snapshot targets configured"
-    core = _clients(cluster.kubeconfig)
     done, errors = [], []
     for target in targets:
-        try:
-            t = resolve_target(target)
-            if t["mode"] == "tenants":
-                done.extend(snapshot_tenants(core, cluster.name, storage,
-                                             cluster.retention_count))
-                continue
-            point = snapshot_target(core, cluster.name, target, storage,
-                                    cluster.retention_count)
-            done.append(f"{target.get('name')}:{point}")
-        except Exception as e:
-            log_error(f"[K8S] {cluster.name}/{target.get('name')}: {e}")
-            errors.append(f"{target.get('name')}: {str(e)[:160]}")
+        ok, msg = run_one_target(db, cluster, storage, target)
+        (done if ok else errors).append(f"{target.get('name')}: {msg}")
     if errors and not done:
         return False, "; ".join(errors)
-    msg = f"{len(done)} snapshot(s) stored"
+    result = f"{len(done)} target(s) stored"
     if errors:
-        msg += f"; {len(errors)} failed: " + "; ".join(errors)
-    return not errors, msg
+        result += f"; {len(errors)} failed: " + "; ".join(errors)
+    return not errors, result
 
 
 def test_cluster(cluster):
@@ -381,6 +410,13 @@ def test_cluster(cluster):
                 results.append({"target": t["name"], "ok": bool(tenants),
                                 "pod": f"{len(tenants)} tenant(s): " +
                                        ", ".join(x["name"] for x in tenants)})
+                continue
+            if t.get("mode") == "tenant":
+                names = [x["name"] for x in discover_tenants(core)]
+                ok = t["tenant"] in names
+                results.append({"target": t["name"], "ok": ok,
+                                "pod": f"tenant {t['tenant']}" if ok
+                                       else f"tenant '{t['tenant']}' not found"})
                 continue
             if t.get("mode") == "pod":
                 if t.get("host_certs_dir"):
@@ -669,6 +705,44 @@ def export_tenant_resources(tenant_core):
             payload[label] = items
             counts[label] = len(items)
     return payload, counts
+
+
+def snapshot_one_tenant(core, cluster_name, job_name, tenant_name, storage, retention_count):
+    """Export a single named tenant into its own job chain
+    (k8s/<cluster>/<job_name>). Returns the point id."""
+    import gzip
+    tn = next((x for x in discover_tenants(core) if x["name"] == tenant_name), None)
+    if tn is None:
+        raise RuntimeError(f"tenant '{tenant_name}' not found on this cluster")
+    if not tn["kubeconfig_secret"]:
+        raise RuntimeError(f"tenant '{tenant_name}' has no admin kubeconfig secret")
+    tcore = _tenant_core(core, tn)
+    payload, counts = export_tenant_resources(tcore)
+    raw = gzip.compress(json.dumps(payload).encode())
+    sha256 = hashlib.sha256(raw).hexdigest()
+
+    name = chain_name(cluster_name, job_name)
+    chain = bm.load_chain(storage, name) or bm.create_empty_chain(name)
+    point_id = bm.new_point_id()
+    point_dir = bm.point_rel(name, point_id)
+    storage.makedirs(point_dir)
+    with storage.open_write(f"{point_dir}/resources.json.gz") as f:
+        f.write(raw)
+    manifest = {
+        "version": 1, "type": "resource_export", "point_id": point_id,
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "tenant": tenant_name, "size_bytes": len(raw), "sha256": sha256,
+        "object_counts": counts, "total_objects": sum(counts.values()),
+    }
+    bm.save_manifest(storage, name, point_id, manifest)
+    chain = bm.add_point_to_chain(chain, {
+        "id": point_id, "type": "full", "parent": None,
+        "timestamp": manifest["timestamp"]})
+    bm.save_chain(storage, name, chain)
+    prune_chain(storage, name, retention_count)
+    log_info(f"[K8S] tenant {tenant_name}: {sum(counts.values())} objects "
+             f"exported ({len(raw)//1024} KiB) → job {job_name}")
+    return point_id
 
 
 def snapshot_tenants(core, cluster_name, storage, retention_count):
