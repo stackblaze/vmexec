@@ -127,6 +127,7 @@ def export_cbt_backup(
 
         disk_manifest_entries = []
         total_disks = len(disks)
+        progress_bands = _disk_progress_bands(disks)
 
         for idx, disk in enumerate(disks):
             if is_cancelled_func and is_cancelled_func():
@@ -136,8 +137,7 @@ def export_cbt_backup(
             flat_basename = disk_basename.replace(".vmdk", "-flat.vmdk")
             desc_rel = f"{dest_rel_dir}/{disk_basename}"
             flat_rel = f"{dest_rel_dir}/{flat_basename}"
-            step_base = 5 + (85 * idx // max(total_disks, 1))
-            step_end = 5 + (85 * (idx + 1) // max(total_disks, 1))
+            step_base, step_end = progress_bands[idx]
 
             if download_http_func:
                 download_http_func(
@@ -171,37 +171,59 @@ def export_cbt_backup(
                     )
                 else:
                     import vddk_transport
-                    try:
-                        vddk_transport.stream_snapshot_disk(
-                            si, vm, snap_obj, disk,
-                            host_ip, host_user, host_password,
-                            storage, flat_rel, config=config,
-                            connection_type=connection_type,
-                            is_cancelled_func=is_cancelled_func,
+
+                    def _stream_full_nfc():
+                        import nfc_transport
+                        nfc_transport.stream_snapshot_disk_nfc(
+                            si, snap_obj, disk, storage, flat_rel,
+                            disk_index=idx,
                             progress_callback=progress_callback,
                             progress_base=step_base + 2,
                             progress_total=max(step_end - step_base - 2, 1),
                             speed_callback=speed_callback,
+                            is_cancelled_func=is_cancelled_func,
+                            connection_type=connection_type,
                         )
-                    except Exception as nbd_err:
-                        if vsphere_context.supports_nfc_export(si, connection_type):
-                            log_warn(
-                                f"[CBT] NBD full disk failed ({str(nbd_err)[:200]}); "
-                                "trying NFC ExportSnapshot"
-                            )
-                            import nfc_transport
-                            nfc_transport.stream_snapshot_disk_nfc(
-                                si, snap_obj, disk, storage, flat_rel,
-                                disk_index=idx,
+
+                    nfc_ok = vsphere_context.supports_nfc_export(si, connection_type)
+                    if not vddk_transport.is_available(config) and nfc_ok:
+                        # VDDK not installed: NFC is the normal transport,
+                        # not a degraded fallback — dispatch directly, no
+                        # warning per disk.
+                        log_info(
+                            f"[CBT] VDDK not installed; streaming full disk "
+                            f"via NFC ExportSnapshot"
+                        )
+                        _stream_full_nfc()
+                    else:
+                        try:
+                            vddk_transport.stream_snapshot_disk(
+                                si, vm, snap_obj, disk,
+                                host_ip, host_user, host_password,
+                                storage, flat_rel, config=config,
+                                connection_type=connection_type,
+                                is_cancelled_func=is_cancelled_func,
                                 progress_callback=progress_callback,
                                 progress_base=step_base + 2,
                                 progress_total=max(step_end - step_base - 2, 1),
                                 speed_callback=speed_callback,
-                                is_cancelled_func=is_cancelled_func,
-                                connection_type=connection_type,
                             )
-                        else:
-                            raise
+                        except Exception as nbd_err:
+                            # A user cancel surfaces as an exception from the
+                            # progress callback — propagate it, don't retry
+                            # the cancelled work over NFC.
+                            if is_cancelled_func and is_cancelled_func():
+                                raise
+                            if nfc_ok:
+                                # An installed VDDK failing at runtime is a
+                                # real fault worth surfacing before we degrade.
+                                log_warn(
+                                    f"[CBT] NBD full disk failed ({str(nbd_err)[:200]}); "
+                                    "trying NFC ExportSnapshot"
+                                )
+                                _stream_full_nfc()
+                            else:
+                                raise
                 disk_manifest_entries.append(bm.build_disk_entry(
                     device_key, disk_basename, flat_basename, capacity,
                     change_id, "full",
@@ -232,12 +254,17 @@ def export_cbt_backup(
                     host_ip, host_user, host_password, storage, config,
                     connection_type, download_http_range_func,
                     is_cancelled_func,
+                    progress_callback=progress_callback,
+                    progress_base=step_base + 2,
+                    progress_total=max(step_end - step_base - 2, 1),
                 )
                 _write_delta_storage(storage, delta_rel, extents, config)
                 disk_manifest_entries.append(bm.build_disk_entry(
                     device_key, disk_basename, flat_basename, capacity,
                     change_id, "incremental", delta_file=delta_name,
                 ))
+                if progress_callback:
+                    progress_callback(step_end)
 
         if progress_callback:
             progress_callback(93)
@@ -327,8 +354,34 @@ def _resolve_local(storage, rel_path):
 HTTP_EXTENT_CHUNK = 64 * 1024 * 1024
 
 
+def _disk_progress_bands(disks, start=5, span=85):
+    """Progress-bar band (base, end) per disk, weighted by capacity.
+
+    Equal per-disk bands make the bar lie on mixed-size VMs: one 100 GB disk
+    plus two 5 GB disks would give 91% of the bytes a third of the bar, so it
+    crawls through the big disk and sprints through the rest. Weighting by
+    capacity keeps the bar proportional to bytes moved. Falls back to equal
+    bands if capacities are missing.
+    """
+    total = sum(int(d.get("capacity_bytes") or 0) for d in disks)
+    n = max(len(disks), 1)
+    if total <= 0:
+        return [
+            (start + span * i // n, start + span * (i + 1) // n)
+            for i in range(len(disks))
+        ]
+    bands = []
+    cum = 0
+    for d in disks:
+        base = start + span * cum // total
+        cum += int(d.get("capacity_bytes") or 0)
+        bands.append((base, start + span * cum // total))
+    return bands
+
+
 def _read_extents_http_frozen_base(
     si, vm, disk, areas, download_http_range_func, connection_type, is_cancelled_func,
+    progress_callback=None, progress_base=0, progress_total=1,
 ):
     """Read changed areas of a LIVE VM without VDDK.
 
@@ -339,6 +392,8 @@ def _read_extents_http_frozen_base(
     powered-off path has always used. The caller enforces the guard.
     """
     extents = []
+    total_bytes = sum(int(l) for _, l in areas) or 1
+    read_bytes = 0
     for start, length in areas:
         offset, remaining = int(start), int(length)
         while remaining > 0:
@@ -355,6 +410,11 @@ def _read_extents_http_frozen_base(
             extents.append((offset, data))
             offset += len(data)
             remaining -= len(data)
+            read_bytes += len(data)
+            if progress_callback:
+                progress_callback(
+                    progress_base + int(progress_total * read_bytes / total_bytes)
+                )
     return extents
 
 
@@ -362,10 +422,18 @@ def _capture_changed_extents(
     si, vm, snap_obj, disk, areas, is_off,
     host_ip, host_user, host_password, storage, config,
     connection_type, download_http_range_func, is_cancelled_func,
+    progress_callback=None, progress_base=0, progress_total=1,
 ):
-    """Read changed block ranges and return list of (offset, data) for delta file."""
+    """Read changed block ranges and return list of (offset, data) for delta file.
+
+    progress_callback (with progress_base/progress_total) reports byte-level
+    progress on the HTTP read paths; the VDDK extent read is a single blocking
+    subprocess, so it only reports its band boundaries.
+    """
     if is_off:
         extents = []
+        total_bytes = sum(int(l) for _, l in areas if int(l) > 0) or 1
+        read_bytes = 0
         for start, length in areas:
             if is_cancelled_func and is_cancelled_func():
                 raise RuntimeError("Backup cancelled by user")
@@ -375,6 +443,11 @@ def _capture_changed_extents(
                 si, disk, start, length, download_http_range_func, vm, connection_type,
             )
             extents.append((start, data))
+            read_bytes += len(data)
+            if progress_callback:
+                progress_callback(
+                    progress_base + int(progress_total * read_bytes / total_bytes)
+                )
         return extents
 
     import vddk_transport
@@ -384,11 +457,16 @@ def _capture_changed_extents(
     single_snapshot = vsphere_context.count_vm_snapshots(vm) == 1
     if vddk_transport.is_available(config):
         try:
+            if progress_callback:
+                progress_callback(progress_base)
             return vddk_transport.read_snapshot_extents(
                 si, vm, snap_obj, disk, filtered,
                 host_ip, host_user, host_password, config, connection_type,
             )
         except Exception as vddk_err:
+            # A user cancel must propagate, not degrade to another transport.
+            if is_cancelled_func and is_cancelled_func():
+                raise
             # An installed VDDK can still fail at runtime — a version outside
             # the vSphere support matrix (e.g. VDDK 9.x against vCenter 7),
             # missing transport, thumbprint drift. When the chain is provably
@@ -410,6 +488,9 @@ def _capture_changed_extents(
         return _read_extents_http_frozen_base(
             si, vm, disk, filtered, download_http_range_func,
             connection_type, is_cancelled_func,
+            progress_callback=progress_callback,
+            progress_base=progress_base,
+            progress_total=progress_total,
         )
     raise RuntimeError(
         "Incremental read needs VDDK when the VM has other snapshots: the top "

@@ -239,11 +239,19 @@ class NfcSnapshotLeaseSession:
 
     def __enter__(self):
         self.lease = self._snap_obj.ExportSnapshot()
-        _wait_lease_ready(self.lease, is_cancelled_func=self._is_cancelled_func)
-        if self.lease.state != vim.HttpNfcLease.State.ready:
-            raise RuntimeError(f"ExportSnapshot lease not ready: {self.lease.state}")
-        self._updater = _LeaseProgressUpdater(self.lease, interval_sec=15)
-        self._updater.start()
+        # From here on the lease exists on the server; if anything below
+        # raises (including a user cancel inside _wait_lease_ready), __exit__
+        # never runs, so abort here or the orphaned lease keeps the export
+        # LRO alive and blocks snapshot removal until vCenter times it out.
+        try:
+            _wait_lease_ready(self.lease, is_cancelled_func=self._is_cancelled_func)
+            if self.lease.state != vim.HttpNfcLease.State.ready:
+                raise RuntimeError(f"ExportSnapshot lease not ready: {self.lease.state}")
+            self._updater = _LeaseProgressUpdater(self.lease, interval_sec=15)
+            self._updater.start()
+        except BaseException:
+            self.abort()
+            raise
         return self
 
     def complete(self):

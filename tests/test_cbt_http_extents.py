@@ -120,5 +120,86 @@ class TestCaptureDispatch(unittest.TestCase):
         self.assertIn("stale", str(ctx.exception))
 
 
+class TestDiskProgressBands(unittest.TestCase):
+    """Progress bands must be weighted by capacity, not disk count."""
+
+    def test_bands_weighted_by_capacity(self):
+        gib = 1024 ** 3
+        disks = [
+            {"capacity_bytes": 100 * gib},
+            {"capacity_bytes": 5 * gib},
+            {"capacity_bytes": 5 * gib},
+        ]
+        bands = cbt_transport._disk_progress_bands(disks)
+        # 100/110 of the 5..90 span → the large disk owns most of the bar.
+        self.assertEqual(bands[0][0], 5)
+        self.assertGreaterEqual(bands[0][1], 80)
+        self.assertEqual(bands[-1][1], 90)
+
+    def test_bands_contiguous_and_monotonic(self):
+        disks = [{"capacity_bytes": c} for c in (7, 1, 3, 9)]
+        bands = cbt_transport._disk_progress_bands(disks)
+        for (a_base, a_end), (b_base, b_end) in zip(bands, bands[1:]):
+            self.assertEqual(a_end, b_base)
+            self.assertLessEqual(a_base, a_end)
+
+    def test_missing_capacity_falls_back_to_equal_split(self):
+        disks = [{"capacity_bytes": 0}, {}, {"capacity_bytes": None}]
+        bands = cbt_transport._disk_progress_bands(disks)
+        self.assertEqual(bands[0][0], 5)
+        self.assertEqual(bands[-1][1], 90)
+        widths = [end - base for base, end in bands]
+        self.assertLessEqual(max(widths) - min(widths), 1)
+
+    def test_single_disk_spans_whole_range(self):
+        self.assertEqual(
+            cbt_transport._disk_progress_bands([{"capacity_bytes": 1}]), [(5, 90)]
+        )
+
+
+class TestFrozenBaseReaderProgress(unittest.TestCase):
+    """Byte-level progress from the HTTP extent reader."""
+
+    def test_progress_reaches_band_end(self):
+        disk = {"rel_path": "vm/vm.vmdk", "ds_name": "ds1"}
+
+        def fake_range(si, ds_name, flat_rel, start, length, vm=None, connection_type=None):
+            return b"x" * length
+
+        seen = []
+        cbt_transport._read_extents_http_frozen_base(
+            None, None, disk, [(0, 1024), (4096, 1024)], fake_range, None, None,
+            progress_callback=seen.append, progress_base=10, progress_total=20,
+        )
+        self.assertEqual(seen[-1], 30)
+        self.assertEqual(seen, sorted(seen))
+        self.assertTrue(all(10 <= p <= 30 for p in seen))
+
+
+class TestCancelPropagation(unittest.TestCase):
+    """A user cancel must abort the backup, not degrade to another transport."""
+
+    def test_cancel_during_vddk_read_is_not_retried_over_http(self):
+        vm = SimpleNamespace(snapshot=SimpleNamespace(rootSnapshotList=[_snap_node()]))
+        cancelled = {"flag": False}
+
+        def read_then_cancel(*a, **k):
+            cancelled["flag"] = True
+            raise RuntimeError("Backup cancelled by user")
+
+        def fake_range(si, ds, rel, start, length, vm=None, connection_type=None):
+            self.fail("HTTP fallback must not run after a cancel")
+
+        with patch.object(vddk_transport, "is_available", return_value=True), \
+             patch.object(vddk_transport, "read_snapshot_extents",
+                          side_effect=read_then_cancel):
+            with self.assertRaises(RuntimeError) as ctx:
+                cbt_transport._capture_changed_extents(
+                    None, vm, None, {"rel_path": "vm/vm.vmdk", "ds_name": "ds1"},
+                    [(0, 4096)], False, "h", "u", "p", None, None, "vcenter",
+                    fake_range, lambda: cancelled["flag"])
+        self.assertIn("cancelled", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
