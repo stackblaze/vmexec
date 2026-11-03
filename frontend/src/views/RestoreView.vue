@@ -59,7 +59,7 @@
                 <input type="radio" name="restore-point" class="accent-brand" :checked="selectedVersion?.path === v.path" @change="selectVersion(v, idx)" />
                 <span class="flex-1 text-sm">{{ v.date }}<span v-if="idx === 0" class="ml-2 text-xs text-muted">latest</span></span>
                 <span class="text-[0.6875rem] font-semibold px-2 py-0.5 rounded-full" :class="pointBadgeClass(v)">{{ pointTypeLabel(v) }}</span>
-                <span class="w-20 text-right text-xs text-muted">{{ v.size }}</span>
+                <span class="w-28 text-right text-xs text-muted" title="Size of the virtual disk. S3 stores only the data in it, compressed; see Settings → Storage.">{{ v.size }} disk size</span>
               </label>
             </div>
           </fieldset>

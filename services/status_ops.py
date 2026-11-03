@@ -115,6 +115,20 @@ def storage_health(path=REPO, now=None):
     return result
 
 
+S3_USAGE_FILE = os.environ.get("VMEXEC_S3_USAGE_FILE", "/host/vmexec-status/s3-usage.json")
+
+
+def s3_usage(path=S3_USAGE_FILE):
+    """Bucket usage written by the host's vmexec-s3-usage.timer, or None."""
+    import json
+    try:
+        with open(path) as f:
+            d = json.load(f)
+        return {"bytes": int(d["bytes"]), "objects": int(d.get("objects", 0)), "at": d.get("at")}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
 def cache_disk(path=CACHE_DIR):
     try:
         if mount_of(path)[0] != os.path.abspath(path):
@@ -217,6 +231,7 @@ def get_status(db, scheduler_paused=False, vddk_installed=True, probe=True):
     storage["location"] = os.environ.get("VMEXEC_REPO_LOCATION") or None
     storage["encrypted"] = os.environ.get("VMEXEC_REPO_ENCRYPTED", "") in ("1", "true", "yes")
     storage["cache"] = cache_disk()
+    storage["s3_usage"] = s3_usage()
 
     hosts = db.query(ESXiHost).all()
     vcenters = [{"name": h.name, "address": h.host_ip, "reachable": _vcenter_reachable(h.host_ip)} for h in hosts]

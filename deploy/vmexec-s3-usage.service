@@ -1,0 +1,13 @@
+[Unit]
+Description=VMExec: record backup bucket usage for the Storage tab
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# The key ZeroFS uses; it stays on the host. Only totals are written.
+EnvironmentFile=/etc/zerofs/zerofs.env
+EnvironmentFile=/etc/vmexec/s3-usage.env
+ExecStart=/usr/bin/python3 /opt/vmexec/deploy/s3-usage.py ${S3_ENDPOINT} ${S3_REGION} ${S3_BUCKET} ${S3_PREFIX} /var/lib/vmexec-status/s3-usage.json
+StateDirectory=vmexec-status
+StateDirectoryMode=0755

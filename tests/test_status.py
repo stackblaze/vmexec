@@ -71,6 +71,24 @@ def _vm(name, h, m, freq="daily", days="0,1,2,3,4,5,6", selected=True, active=Tr
                            schedule_days=days, is_selected=selected, is_job_active=active)
 
 
+class TestS3Usage(unittest.TestCase):
+    def test_reads_totals_file(self):
+        import json
+        f = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        json.dump({"bytes": 31280262756, "objects": 470, "at": "2026-11-03T17:11:05+00:00"}, f)
+        f.close()
+        self.addCleanup(os.remove, f.name)
+        self.assertEqual(status_ops.s3_usage(f.name)["bytes"], 31280262756)
+
+    def test_missing_or_bad_file_is_none(self):
+        self.assertIsNone(status_ops.s3_usage("/nonexistent/s3-usage.json"))
+        f = tempfile.NamedTemporaryFile("w", delete=False)
+        f.write("not json")
+        f.close()
+        self.addCleanup(os.remove, f.name)
+        self.assertIsNone(status_ops.s3_usage(f.name))
+
+
 class TestNextRun(unittest.TestCase):
     def test_earliest_tonight(self):
         now = datetime.datetime(2026, 11, 3, 16, 0)  # a Tuesday

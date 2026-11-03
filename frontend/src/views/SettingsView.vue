@@ -34,6 +34,7 @@
       <p v-if="status?.storage?.error" class="text-sm text-red-600 dark:text-red-400 m-0">{{ status.storage.error }}</p>
       <dl class="grid gap-x-6 gap-y-4 grid-cols-[repeat(auto-fit,minmax(13rem,1fr))] mt-0 text-sm">
         <div><dt class="text-xs text-muted mb-1">S3 location</dt><dd class="m-0 font-mono text-xs">{{ status?.storage?.location || 'Not set by install.sh' }}</dd></div>
+        <div><dt class="text-xs text-muted mb-1">Stored in S3</dt><dd class="m-0">{{ s3Used }}</dd></div>
         <div><dt class="text-xs text-muted mb-1">Encryption</dt><dd class="m-0">{{ status?.storage?.encrypted ? 'On · password in the region vault' : 'Unknown' }}</dd></div>
         <div><dt class="text-xs text-muted mb-1">Write check</dt><dd class="m-0">{{ status?.storage?.probe_ms != null ? `${status.storage.probe_ms} ms, synced to S3` : '—' }}</dd></div>
         <div><dt class="text-xs text-muted mb-1">Mount</dt><dd class="m-0 font-mono text-xs">{{ cfg.nfs_path || '/mnt/backups' }}{{ status?.storage?.fstype ? ` (${status.storage.fstype})` : '' }}</dd></div>
@@ -419,6 +420,16 @@ function go(id) {
   editing.value = null
   router.push(`/settings/${id}`)
 }
+
+// What the bucket holds: what you pay for (VM disk sizes are mostly empty space).
+const s3Used = computed(() => {
+  const u = status.value?.storage?.s3_usage
+  if (!u) return 'Not measured yet'
+  const gb = u.bytes / 1024 ** 3
+  const size = gb >= 1024 ? `${(gb / 1024).toFixed(2)} TB` : gb >= 1 ? `${gb.toFixed(1)} GB` : `${(u.bytes / 1024 ** 2).toFixed(0)} MB`
+  const at = u.at ? new Date(u.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }) : ''
+  return at ? `${size} · checked ${at}` : size
+})
 
 const vddkText = computed(() => {
   const vddk = (status.value?.problems || []).find((p) => p.kind === 'vddk')

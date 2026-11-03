@@ -15,6 +15,8 @@ services:
       - ${VMEXEC_BACKUP_DIR:-/mnt/backups}:/mnt/backups
       # ZeroFS cache disk, read-only: the Storage tab shows how full it is.
       - ${VMEXEC_ZEROFS_CACHE_DIR:-/var/lib/zerofs}:/host/zerofs-cache:ro
+      # Bucket usage totals from the host's vmexec-s3-usage.timer (no S3 keys in the app)
+      - /var/lib/vmexec-status:/host/vmexec-status:ro
       # VDDK tarball, supplied by the operator: proprietary and not
       # redistributable, so it is never in the image. See scripts/install-vddk.sh.
       - ./vendor/vddk:/app/vendor/vddk:ro
@@ -44,6 +46,8 @@ services:
       - ${VMEXEC_BACKUP_DIR:-/mnt/backups}:/mnt/backups
       # ZeroFS cache disk, read-only: the Storage tab shows how full it is.
       - ${VMEXEC_ZEROFS_CACHE_DIR:-/var/lib/zerofs}:/host/zerofs-cache:ro
+      # Bucket usage totals from the host's vmexec-s3-usage.timer (no S3 keys in the app)
+      - /var/lib/vmexec-status:/host/vmexec-status:ro
       - ./vendor/vddk:/app/vendor/vddk:ro
     environment:
       - DATA_DIR=/app/data
