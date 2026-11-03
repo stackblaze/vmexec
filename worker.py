@@ -17,15 +17,18 @@ from models import SessionLocal, Config, VM, BackupLog, RestoreJob
 from config_env import DATA_DIR
 from logger_util import log_info, log_warn, log_error, log_debug
 
-def cleanup_old_backups(storage, vm_name, retention_count, full_interval=7, config=None):
-    """Deletes backup folders for the specific VM based on retention policy."""
+def cleanup_old_backups(storage, vm_name, retention_count, full_interval=7, config=None, gfs=None):
+    """Deletes backup folders for the specific VM based on retention policy.
+
+    gfs = (daily, weekly, monthly) from the VM's backup policy, if it has one.
+    """
     chain_rel = f"{vm_name}/_chain/chain.json"
     if storage.exists(chain_rel):
         from backup_manifest import load_chain
         from chain_restore import apply_chain_retention
         chain = load_chain(storage, vm_name)
         if chain:
-            apply_chain_retention(storage, vm_name, chain, retention_count, full_interval, config=config)
+            apply_chain_retention(storage, vm_name, chain, retention_count, full_interval, config=config, gfs=gfs)
         return
 
     vm_dir = vm_name
@@ -664,7 +667,9 @@ def perform_backup(vm_id: int):
         
         if success:
             full_interval = getattr(config, "cbt_full_interval", 7) or 7
-            cleanup_old_backups(storage, vm.vm_name, vm.retention_count, full_interval, config=config)
+            from services.policy_ops import retention_for
+            cleanup_old_backups(storage, vm.vm_name, vm.retention_count, full_interval,
+                                config=config, gfs=retention_for(vm))
             try:
                 from compression_util import compress_legacy_backup_dir
                 compress_legacy_backup_dir(storage, dest_rel_dir, config)

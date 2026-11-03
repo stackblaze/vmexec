@@ -15,6 +15,7 @@ from api.schemas import (
     RestoreCreateRequest, RestoreResponse, OverviewResponse,
     SessionLoginRequest, SessionLoginResponse, SessionMfaRequest,
     MfaSetupRequest, MfaSetupStartResponse, BootstrapResponse,
+    PolicyResponse, PolicyCreate, PolicyUpdate, PolicyAssign,
 )
 from models import User, ApiKey, ESXiHost, VM
 from services import backup_ops
@@ -430,6 +431,75 @@ def patch_vm(
     return VmResponse(**backup_ops.vm_to_dict(
         vm, backup_ops.latest_backup_messages(db, [vm.vm_name]).get(vm.vm_name), db.query(Config).first(),
     ))
+
+
+# --- Backup policies -------------------------------------------------------
+# A VM is protected when it has a policy; the policy owns its schedule and
+# retention (services/policy_ops.py).
+
+@router.get("/policies", response_model=List[PolicyResponse])
+def list_policies(db: Session = Depends(get_db), user: User = Depends(get_api_user)):
+    from services import policy_ops
+    return [PolicyResponse(**p) for p in policy_ops.list_policies(db)]
+
+
+@router.post("/policies", response_model=PolicyResponse, status_code=201)
+def create_policy(
+    body: PolicyCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_api_role("admin", "operator")),
+):
+    from services import policy_ops
+    try:
+        return PolicyResponse(**policy_ops.create_policy(db, body.model_dump()))
+    except policy_ops.PolicyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.patch("/policies/{policy_id}", response_model=PolicyResponse)
+def update_policy(
+    policy_id: int,
+    body: PolicyUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_api_role("admin", "operator")),
+):
+    from services import policy_ops
+    try:
+        return PolicyResponse(**policy_ops.update_policy(db, policy_id, body.model_dump(exclude_none=True)))
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except policy_ops.PolicyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/policies/{policy_id}")
+def delete_policy(
+    policy_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_api_role("admin", "operator")),
+):
+    from services import policy_ops
+    try:
+        policy_ops.delete_policy(db, policy_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except policy_ops.PolicyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True}
+
+
+@router.post("/policies/assign")
+def assign_policy(
+    body: PolicyAssign,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_api_role("admin", "operator")),
+):
+    from services import policy_ops
+    try:
+        ids = policy_ops.assign(db, body.vm_ids, body.policy_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"ok": True, "vm_ids": ids}
 
 
 @router.post("/inventory/apply")

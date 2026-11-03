@@ -273,6 +273,49 @@ class VmResponse(BaseModel):
     host_name: str = ""
     last_secondary_copy_status: str = "none"
     last_backup_message: Optional[str] = None
+    policy_id: Optional[int] = None
+    policy_name: Optional[str] = None
+
+
+class PolicyResponse(BaseModel):
+    id: int
+    name: str
+    frequency: str
+    days: str
+    hour: int
+    minute: int
+    keep_daily: int
+    keep_weekly: int
+    keep_monthly: int
+    vm_count: int
+    summary: str
+
+
+class PolicyCreate(BaseModel):
+    name: str
+    frequency: str = "daily"
+    days: str = "0,1,2,3,4,5,6"
+    hour: int = 2
+    minute: int = 0
+    keep_daily: int = 7
+    keep_weekly: int = 4
+    keep_monthly: int = 6
+
+
+class PolicyUpdate(BaseModel):
+    name: Optional[str] = None
+    frequency: Optional[str] = None
+    days: Optional[str] = None
+    hour: Optional[int] = None
+    minute: Optional[int] = None
+    keep_daily: Optional[int] = None
+    keep_weekly: Optional[int] = None
+    keep_monthly: Optional[int] = None
+
+
+class PolicyAssign(BaseModel):
+    vm_ids: List[int]
+    policy_id: Optional[int] = None  # None = stop protecting these VMs
 
 
 class SyncResult(BaseModel):

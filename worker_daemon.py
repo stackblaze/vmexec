@@ -43,7 +43,7 @@ def get_schedule_hash():
         vms = db.query(VM).filter(VM.is_selected == True).all()
         # Create a string representation of the schedule state
         state_str = f"paused:{int(paused)}|" + "".join(
-            [f"{v.id}:{v.schedule_hour}:{v.schedule_minute}:{v.is_job_active}" for v in vms]
+            [f"{v.id}:{v.schedule_hour}:{v.schedule_minute}:{v.is_job_active}:{v.schedule_frequency}:{v.schedule_days}" for v in vms]
         )
         return hashlib.md5(state_str.encode()).hexdigest()
     finally:

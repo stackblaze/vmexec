@@ -421,6 +421,8 @@ def vm_to_dict(vm, last_backup_message=None, config=None):
         "host_name": vm.esxi_host.name if vm.esxi_host else "",
         "last_secondary_copy_status": getattr(vm, "last_secondary_copy_status", None) or "none",
         "last_backup_message": last_backup_message,
+        "policy_id": getattr(vm, "policy_id", None),
+        "policy_name": vm.policy.name if getattr(vm, "policy", None) else None,
     }
 
 
