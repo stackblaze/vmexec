@@ -420,7 +420,8 @@ dd if=/dev/urandom of="$probe_file" bs=1M count=4 conv=fsync status=none && rm -
 log "VMExec ($APP_DIR)"
 ENVF="$APP_DIR/.env"
 touch "$ENVF"
-set_env() { # key value
+set_env() { # key value; touches the file only when the value differs
+  if grep -qx "$1=$2" "$ENVF"; then return 0; fi
   if grep -q "^$1=" "$ENVF"; then sed -i "s#^$1=.*#$1=$2#" "$ENVF"; else echo "$1=$2" >> "$ENVF"; fi
 }
 grep -q '^COMPOSE_PROJECT_NAME=' "$ENVF" || echo "COMPOSE_PROJECT_NAME=vmexec" >> "$ENVF"
