@@ -39,9 +39,26 @@ _static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 os.makedirs(_static_dir, exist_ok=True)
 SPA_DIST = os.path.join(_static_dir, "dist")
 SPA_INDEX = os.path.join(SPA_DIST, "index.html")
+
+
+def spa_index():
+    """index.html, never reused without checking: it names the current
+    build's hashed assets, so a cached copy keeps running the old UI after
+    a deploy (seen 2026-11-03: a removed Settings card kept showing)."""
+    return FileResponse(SPA_INDEX, headers={"Cache-Control": "no-cache"})
+
+
+class _HashedAssets(StaticFiles):
+    """/assets/* names carry a content hash: safe to cache for a year."""
+
+    async def get_response(self, path, scope):
+        resp = await super().get_response(path, scope)
+        if resp.status_code == 200:
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return resp
 app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 if os.path.isdir(os.path.join(SPA_DIST, "assets")):
-    app.mount("/assets", StaticFiles(directory=os.path.join(SPA_DIST, "assets")), name="spa_assets")
+    app.mount("/assets", _HashedAssets(directory=os.path.join(SPA_DIST, "assets")), name="spa_assets")
 
 
 def spa_enabled():
@@ -121,7 +138,7 @@ def require_auth(request: Request):
 @app.get("/login")
 def login_page(request: Request, error: str = None, cancel: bool = False):
     if spa_enabled():
-        return FileResponse(SPA_INDEX)
+        return spa_index()
     if cancel:
         response = RedirectResponse(url="/login", status_code=303)
         response.delete_cookie(auth.MFA_PENDING_COOKIE)
@@ -328,7 +345,7 @@ def admin_update_role(
 @app.get("/")
 def read_root(request: Request, db: Session = Depends(get_db)):
     if spa_enabled():
-        return FileResponse(SPA_INDEX)
+        return spa_index()
     try:
         username = require_auth(request)
     except HTTPException as e:
@@ -924,7 +941,7 @@ def get_job_progress(request: Request, db: Session = Depends(get_db)):
 @app.get("/overview")
 def get_overview(request: Request, db: Session = Depends(get_db)):
     if spa_enabled():
-        return FileResponse(SPA_INDEX)
+        return spa_index()
     try:
         require_auth(request)
     except HTTPException:
@@ -971,7 +988,7 @@ def spa_catchall(full_path: str):
     asset = os.path.join(SPA_DIST, full_path)
     if full_path and os.path.isfile(asset):
         return FileResponse(asset)
-    return FileResponse(SPA_INDEX)
+    return spa_index()
 
 
 if __name__ == "__main__":
