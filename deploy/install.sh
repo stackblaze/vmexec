@@ -106,13 +106,18 @@ preflight() {
   if [ ${#need[@]} -gt 0 ]; then apt-get update -qq && apt-get install -y -qq "${need[@]}" >/dev/null; fi
   ok "packages: ${pkgs[*]}"
 
-  # ZeroFS is mounted over 9P on a Unix socket: kernel modules 9p + 9pnet_fd.
-  if ! modprobe 9p 2>/dev/null || ! modprobe 9pnet_fd 2>/dev/null; then
+  # ZeroFS is mounted over 9P on a Unix socket. Kernels before 6.x carry the
+  # socket transport inside 9pnet; newer ones split it out as 9pnet_fd.
+  load_9p() {
+    modprobe 9p 2>/dev/null || return 1
+    if modinfo 9pnet_fd >/dev/null 2>&1; then modprobe 9pnet_fd 2>/dev/null || return 1; fi
+    grep -qw 9p /proc/filesystems
+  }
+  if ! load_9p; then
     apt-get install -y -qq "linux-modules-extra-$(uname -r)" >/dev/null 2>&1 || true
-    modprobe 9p 2>/dev/null && modprobe 9pnet_fd 2>/dev/null \
-      || die "the kernel has no 9P support (modules 9p, 9pnet_fd). Install linux-modules-extra-$(uname -r) or use the generic kernel."
+    load_9p || die "the kernel has no 9P support. Install linux-modules-extra-$(uname -r) or use the generic kernel."
   fi
-  printf '9p\n9pnet_fd\n' > /etc/modules-load.d/vmexec-9p.conf
+  { echo 9p; modinfo 9pnet_fd >/dev/null 2>&1 && echo 9pnet_fd; } > /etc/modules-load.d/vmexec-9p.conf
   ok "kernel 9P support"
 
   # S3 rejects signed requests when the clock is off by more than 15 minutes.
