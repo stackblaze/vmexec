@@ -76,15 +76,15 @@
                   <circle class="fill-none stroke-[3.2] stroke-brand transition-[stroke-dasharray,stroke-dashoffset] duration-[450ms]" cx="18" cy="18" r="15.9155" pathLength="100" :style="donutSeg(backupPct, freePct + usedPct)" />
                 </svg>
                 <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none text-center">
-                  <div class="text-sm font-bold leading-tight tabular-nums">{{ data.storage.disk_free_gb?.toFixed(0) }} GB</div>
+                  <div class="text-sm font-bold leading-tight tabular-nums">{{ formatGb(data.storage.disk_free_gb) }}</div>
                   <div class="text-[0.625rem] font-semibold mt-0.5 text-muted">{{ data.storage.disk_free_pct?.toFixed(0) }}% free</div>
                 </div>
               </div>
             </div>
             <p class="flex flex-wrap items-center justify-center gap-2 mt-1 text-[0.625rem] text-muted">
-              <span class="inline-flex items-center gap-1"><span class="w-[0.45rem] h-[0.45rem] rounded-full shrink-0 bg-emerald-500"></span>Free <strong>{{ data.storage.disk_free_gb?.toFixed(1) }} GB</strong></span>
+              <span class="inline-flex items-center gap-1"><span class="w-[0.45rem] h-[0.45rem] rounded-full shrink-0 bg-emerald-500"></span>Free <strong>{{ formatGb(data.storage.disk_free_gb, 1) }}</strong></span>
               <span>·</span>
-              <span class="inline-flex items-center gap-1"><span class="w-[0.45rem] h-[0.45rem] rounded-full shrink-0 bg-slate-500"></span>Used <strong>{{ data.storage.disk_used_gb?.toFixed(1) }} GB</strong></span>
+              <span class="inline-flex items-center gap-1"><span class="w-[0.45rem] h-[0.45rem] rounded-full shrink-0 bg-slate-500"></span>Used <strong>{{ formatGb(data.storage.disk_used_gb, 1) }}</strong></span>
               <span>·</span>
               <span class="inline-flex items-center gap-1"><span class="w-[0.45rem] h-[0.45rem] rounded-full shrink-0 bg-brand"></span>Backups <strong>{{ data.storage.total_human }}</strong></span>
             </p>
@@ -99,7 +99,7 @@
             <div v-for="d in data.machine_disks" :key="d.path">
               <div class="flex items-baseline justify-between gap-2 text-xs mb-1">
                 <span class="min-w-0 truncate">{{ d.label }} <span class="font-mono text-muted">{{ d.path }}</span></span>
-                <span class="shrink-0 tabular-nums" :class="diskTextClass(d.used_pct)">{{ d.free_gb.toFixed(0) }} GB free of {{ d.total_gb.toFixed(0) }} GB</span>
+                <span class="shrink-0 tabular-nums" :class="diskTextClass(d.used_pct)">{{ formatGb(d.free_gb) }} free of {{ formatGb(d.total_gb) }}</span>
               </div>
               <div
                 class="h-2 rounded-sm bg-border overflow-hidden"
@@ -265,6 +265,18 @@ function diskBarClass(usedPct) {
   if (usedPct >= 70) return 'bg-amber-500'
   return 'bg-emerald-500'
 }
+// Sizes arrive in GiB; step up to TB/PB/EB so large or S3-backed volumes
+// (ZeroFS reports 16 EiB) read as "16 EB", not 17179869184 GB.
+function formatGb(gb, digits = 0) {
+  if (gb == null || !Number.isFinite(Number(gb))) return '—'
+  const units = ['GB', 'TB', 'PB', 'EB']
+  let v = Number(gb)
+  let i = 0
+  while (Math.abs(v) >= 1024 && i < units.length - 1) { v /= 1024; i++ }
+  const d = i === 0 ? digits : (Math.abs(v) < 100 ? 1 : 0)
+  return `${Number(v.toFixed(d))} ${units[i]}`
+}
+
 function diskTextClass(usedPct) {
   if (usedPct >= 85) return 'text-red-400 font-semibold'
   if (usedPct >= 70) return 'text-amber-500 font-semibold'
