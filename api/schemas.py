@@ -65,49 +65,6 @@ class ApiKeyInfo(BaseModel):
     last_used_at: Optional[str] = None
 
 
-class StorageConfigUpdate(BaseModel):
-    storage_type: Optional[str] = None
-    nfs_path: Optional[str] = None
-    smb_unc_path: Optional[str] = None
-    smb_user: Optional[str] = None
-    smb_password: Optional[str] = None
-    s3_endpoint: Optional[str] = None
-    s3_access_key: Optional[str] = None
-    s3_secret_key: Optional[str] = None
-    s3_bucket: Optional[str] = None
-    s3_region: Optional[str] = None
-    perf_parallel_threads: Optional[int] = None
-    perf_compression_level: Optional[int] = None
-    backup_timeout_mins: Optional[int] = None
-    max_global_backups: Optional[int] = None
-    max_backups_per_host: Optional[int] = None
-    max_schedules_per_hour: Optional[int] = None
-    datastore_min_free_pct: Optional[int] = None
-    datastore_headroom_gb: Optional[int] = None
-    datastore_est_multiplier: Optional[float] = None
-    backup_transport: Optional[str] = None
-    repo_min_free_gb: Optional[int] = None
-    exclude_infra_vms: Optional[bool] = None
-    vddk_libdir: Optional[str] = None
-    cbt_enabled: Optional[bool] = None
-    cbt_full_interval: Optional[int] = None
-    retention_mode: Optional[str] = None
-    gfs_daily_keep: Optional[int] = None
-    gfs_weekly_keep: Optional[int] = None
-    gfs_monthly_keep: Optional[int] = None
-    secondary_copy_enabled: Optional[bool] = None
-    secondary_storage_type: Optional[str] = None
-    secondary_nfs_path: Optional[str] = None
-    secondary_smb_unc_path: Optional[str] = None
-    secondary_smb_user: Optional[str] = None
-    secondary_smb_password: Optional[str] = None
-    secondary_s3_endpoint: Optional[str] = None
-    secondary_s3_access_key: Optional[str] = None
-    secondary_s3_secret_key: Optional[str] = None
-    secondary_s3_bucket: Optional[str] = None
-    secondary_s3_region: Optional[str] = None
-
-
 class ConfigResponse(BaseModel):
     storage_type: str
     nfs_path: str

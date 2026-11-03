@@ -66,17 +66,3 @@ def compress_storage_file(storage, rel_path, level):
     return rel_path
 
 
-def compress_legacy_backup_dir(storage, rel_dir, config):
-    """Gzip flat VMDKs in legacy date-folder backups after write."""
-    level = effective_level(config)
-    if level <= 0 or not rel_dir or "/_chain/" in rel_dir:
-        return
-    if not re.match(r"^[^/]+/\d{4}-\d{2}-\d{2}$", rel_dir):
-        return
-    try:
-        files = storage.list_files(rel_dir)
-    except Exception:
-        return
-    for fn in files:
-        if fn.endswith("-flat.vmdk") and not fn.endswith(".gz"):
-            compress_storage_file(storage, f"{rel_dir}/{fn}", level)

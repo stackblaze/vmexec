@@ -66,8 +66,6 @@ export const hostsApi = {
 export const configApi = {
   get: () => api('/config'),
   update: (body) => api('/config', { method: 'PUT', body: JSON.stringify(body) }),
-  updateStorage: (body) => api('/config/storage', { method: 'PUT', body: JSON.stringify(body) }),
-  testStorage: () => api('/config/storage/test', { method: 'POST' }),
   testEmail: () => api('/config/email/test', { method: 'POST' }),
 }
 

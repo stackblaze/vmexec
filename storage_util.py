@@ -1,7 +1,7 @@
 import os
 import shutil
 from abc import ABC, abstractmethod
-from logger_util import log_info, log_error, log_warn
+from logger_util import log_warn
 
 class StorageProvider(ABC):
     @abstractmethod
@@ -246,22 +246,17 @@ def check_smb_path(path, label="SMB"):
 
 
 def get_storage(config):
-    if config.storage_type == "S3":
-        return S3StorageProvider(
-            config.s3_endpoint,
-            config.s3_access_key,
-            config.s3_secret_key,
-            config.s3_bucket,
-            config.s3_region
-        )
-    elif config.storage_type == "NFS":
-        return LocalStorageProvider(config.nfs_path)
-    else: # Default to SMB
-        problem = check_smb_path(config.smb_unc_path)
-        if problem:
-            log_error(f"[STORAGE] {problem}")
-            raise ValueError(problem)
-        return LocalStorageProvider(config.smb_unc_path)
+    """The backup repository: the ZeroFS mount (/mnt/backups by default).
+
+    SMB, NFS shares and direct S3 as primary storage were removed: ZeroFS
+    puts the repository in S3, and restore chains need a real filesystem.
+    S3/SMB providers remain for the secondary copy only.
+    """
+    if (getattr(config, "storage_type", "NFS") or "NFS").upper() != "NFS":
+        raise ValueError(
+            f"Primary storage '{config.storage_type}' is no longer supported; "
+            "run deploy/install.sh (ZeroFS at /mnt/backups)")
+    return LocalStorageProvider(config.nfs_path or "/mnt/backups")
 
 
 def get_secondary_storage(config):

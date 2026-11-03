@@ -610,12 +610,3 @@ def _read_range_http(si, disk, start, length, download_http_range_func, vm, conn
     )
 
 
-def _read_range_nbd(
-    si, vm, snap_obj, disk, start, length,
-    host_ip, host_user, host_password, config, connection_type,
-):
-    import vddk_transport
-    return vddk_transport.read_snapshot_extent(
-        si, vm, snap_obj, disk, start, length,
-        host_ip, host_user, host_password, config, connection_type,
-    )

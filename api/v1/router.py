@@ -7,7 +7,7 @@ import auth
 from api.deps import get_db, get_api_user, require_api_role, bearer_scheme, _user_from_token, cookie_sec
 from api.schemas import (
     LoginRequest, TokenResponse, ApiKeyCreateRequest, ApiKeyCreateResponse, ApiKeyInfo,
-    StorageConfigUpdate, ConfigResponse, ConfigUpdate, TestResult,
+    ConfigResponse, ConfigUpdate, TestResult,
     ESXiHostCreate, ESXiHostResponse, VmUpdate, VmResponse, SyncResult,
     InventoryApplyRequest,
     UserResponse, UserCreateRequest, UserCreateResponse, UserRoleUpdate,
@@ -228,22 +228,6 @@ def test_alert(
         return TestResult(ok=False, message="Set an https:// webhook URL first.")
     ok, msg = alert_ops.test(url)
     return TestResult(ok=ok, message=msg)
-
-
-@router.put("/config/storage", response_model=ConfigResponse)
-def update_storage(
-    body: StorageConfigUpdate,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_api_role("admin")),
-):
-    config = backup_ops.update_storage_config(db, body.model_dump(exclude_unset=True))
-    return ConfigResponse(**backup_ops.config_to_dict(config))
-
-
-@router.post("/config/storage/test", response_model=TestResult)
-def test_storage(db: Session = Depends(get_db), user: User = Depends(require_api_role("admin", "operator"))):
-    ok, message = backup_ops.test_storage(db)
-    return TestResult(ok=ok, message=message)
 
 
 @router.post("/config/email/test", response_model=TestResult)
