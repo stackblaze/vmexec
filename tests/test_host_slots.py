@@ -33,3 +33,14 @@ class TestSlots(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPlainConfig(unittest.TestCase):
+    def test_disk_threads_get_a_plain_copy(self):
+        from models import Config
+        import cbt_transport
+        c = Config(cbt_full_interval=7, backup_transport="nbd")
+        p = cbt_transport._plain_config(c)
+        self.assertFalse(hasattr(p, "__table__"))
+        self.assertEqual((p.cbt_full_interval, p.backup_transport), (7, "nbd"))
+        self.assertIsNone(cbt_transport._plain_config(None))

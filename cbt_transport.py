@@ -25,6 +25,14 @@ class _DisksCancelled(Exception):
     """A disk worker saw the user's cancel."""
 
 
+def _plain_config(config):
+    """Column values of a Config row as a plain object (safe across threads)."""
+    if config is None or not hasattr(config, "__table__"):
+        return config
+    from types import SimpleNamespace
+    return SimpleNamespace(**{c.name: getattr(config, c.name) for c in config.__table__.columns})
+
+
 def _parallel_disks():
     try:
         return max(1, min(16, int(os.environ.get("VMEXEC_PARALLEL_DISKS", "4"))))
@@ -141,6 +149,12 @@ def export_cbt_backup(
         disk_manifest_entries = []
         total_disks = len(disks)
         progress_bands = _disk_progress_bands(disks)
+
+        # Disk threads must never touch the DB session: reading an attribute
+        # of an ORM object after a commit (expired) emits SQL, which collided
+        # with another thread's progress commit ("session is in 'prepared'
+        # state", Central 2026-11-03). They get a plain copy of the settings.
+        config = _plain_config(config)
 
         def _do_disk(idx, disk, progress_callback, speed_callback):
             if is_cancelled_func and is_cancelled_func():
