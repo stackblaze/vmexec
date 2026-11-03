@@ -49,6 +49,21 @@ def get_schedule_hash():
     finally:
         db.close()
 
+def _sweep_repository(db):
+    """Leftovers of backups/restores that could not clean up (repo_sweep.py)."""
+    try:
+        import repo_sweep
+        import storage_util
+        config = db.query(Config).first()
+        if not config or config.storage_type != "NFS":
+            return
+        running = {v.vm_name for v in db.query(VM).all()
+                   if v.id in worker.get_active_backup_vm_ids() or (v.current_action or "").strip()}
+        repo_sweep.maybe_sweep(storage_util.get_storage(config), running)
+    except Exception as e:  # noqa: BLE001
+        log_warn(f"[SWEEP] check failed: {e}")
+
+
 def _check_alerts(db):
     """Missed schedules and storage health -> webhook (services/alert_ops.py)."""
     try:
@@ -173,6 +188,7 @@ def run_daemon():
                 try:
                     worker.clear_orphaned_actions(wdb)
                     _check_alerts(wdb)
+                    _sweep_repository(wdb)
                 finally:
                     wdb.close()
 

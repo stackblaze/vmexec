@@ -277,11 +277,13 @@ def restore_point(si, storage, point_rel_dir, target_ds, target_name, server_hos
     dc = _datacenter_for(content, target_ds)
     folder = f"[{target_ds}] {target_name}"
     created_vm = None
+    created_dir = False
     pw_path = None
     t0 = time.time()
     try:
         log_info(f"[RESTORE-FAST] {p['vm_name']} -> {target_name} on {target_ds}: {len(p['disks'])} disk(s), thin, VDDK")
         content.fileManager.MakeDirectory(name=folder, datacenter=dc, createParentDirectories=True)
+        created_dir = True  # ours: removed again if the restore fails
         vdm = content.virtualDiskManager
         for d in p["disks"]:
             spec = vim.VirtualDiskManager.FileBackedVirtualDiskSpec(
@@ -327,7 +329,7 @@ def restore_point(si, storage, point_rel_dir, target_ds, target_name, server_hos
                 _wait_task(created_vm.Destroy_Task(), "remove partial VM")
             except Exception as e:  # noqa: BLE001
                 log_warn(f"[RESTORE-FAST] could not remove partial VM {target_name}: {e}")
-        else:
+        elif created_dir:
             try:
                 _wait_task(content.fileManager.DeleteDatastoreFile_Task(name=folder, datacenter=dc), "remove folder")
             except Exception:  # noqa: BLE001

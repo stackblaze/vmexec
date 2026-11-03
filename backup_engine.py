@@ -1174,6 +1174,7 @@ def import_vm_native(si, storage, source_rel_dir, target_ds, target_name, progre
     Restores a VM by uploading files from StorageProvider to ESXi and registering the VMX.
     """
     mat_dir = None
+    created_dir = False
     try:
         log_info(f"[RESTORE] Starting import_vm_native for {target_name} on {target_ds}")
         content = si.RetrieveContent()
@@ -1223,6 +1224,7 @@ def import_vm_native(si, storage, source_rel_dir, target_ds, target_name, progre
         log_info(f"[RESTORE] Creating target directory: {res_dir}")
         try:
             fm.MakeDirectory(name=res_dir, datacenter=datacenter, createParentDirectories=True)
+            created_dir = True  # ours: may be removed if the restore fails
             log_info(f"[RESTORE] Directory {res_dir} created/verified.")
         except Exception as dm_err:
             log_error(f"[RESTORE] MakeDirectory failed: {dm_err}")
@@ -1270,6 +1272,17 @@ def import_vm_native(si, storage, source_rel_dir, target_ds, target_name, progre
 
     except Exception as e:
         log_error(f"[RESTORE] Native restore failed: {e}")
+        # Nothing registered yet: remove the half-uploaded folder we created
+        # on the target datastore (a cancelled restore used to leave it).
+        try:
+            if created_dir and vsphere_context.find_vm_by_name(si, target_name) is None:
+                t = content.fileManager.DeleteDatastoreFile_Task(
+                    name=f"[{target_ds}] {target_name}", datacenter=datacenter)
+                while t.info.state not in (vim.TaskInfo.State.success, vim.TaskInfo.State.error):
+                    time.sleep(1)
+                log_info(f"[RESTORE] Removed partial folder [{target_ds}] {target_name}")
+        except Exception as clean_err:  # noqa: BLE001
+            log_warn(f"[RESTORE] Could not remove partial folder: {clean_err}")
         return False, str(e)
     finally:
         # The rebuilt full disk is temporary: without this every restore left
