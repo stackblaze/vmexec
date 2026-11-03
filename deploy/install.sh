@@ -290,8 +290,9 @@ install -d -m 0700 "$CACHE_MNT/cache"
 log "ZeroFS service and /mnt/backups"
 host=${ENDPOINT#https://}
 conf_before=$(sha256sum "$ZCONF" 2>/dev/null | cut -d' ' -f1 || true)
-units_before=$(cat /etc/systemd/system/zerofs.service /etc/systemd/system/mnt-backups.mount \
-  /etc/systemd/system/docker.service.d/vmexec-backups.conf 2>/dev/null | sha256sum | cut -d' ' -f1)
+# (on a new VM none of these exist yet: cat fails, which must not end the script)
+units_before=$( { cat /etc/systemd/system/zerofs.service /etc/systemd/system/mnt-backups.mount \
+  /etc/systemd/system/docker.service.d/vmexec-backups.conf 2>/dev/null || true; } | sha256sum | cut -d' ' -f1)
 MOUNT_CHANGED=0
 cat > "$ZCONF" <<EOF
 # ZeroFS for VMExec (deploy/install.sh). Backups live in S3 at $URL;
