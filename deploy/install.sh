@@ -217,6 +217,9 @@ install -d -m 0700 "$CACHE_MNT/cache"
 log "ZeroFS service and /mnt/backups"
 host=${ENDPOINT#https://}
 conf_before=$(sha256sum "$ZCONF" 2>/dev/null | cut -d' ' -f1 || true)
+units_before=$(cat /etc/systemd/system/zerofs.service /etc/systemd/system/mnt-backups.mount \
+  /etc/systemd/system/docker.service.d/vmexec-backups.conf 2>/dev/null | sha256sum | cut -d' ' -f1)
+MOUNT_CHANGED=0
 cat > "$ZCONF" <<EOF
 # ZeroFS for VMExec (deploy/install.sh). Backups live in S3 at $URL;
 # the cache disk only speeds things up. 9P on a local Unix socket only: no NFS
@@ -326,13 +329,15 @@ EOF
 
 systemctl daemon-reload
 systemctl enable zerofs.service mnt-backups.mount vmexec-s3-usage.timer vmexec-db-copy.timer >/dev/null 2>&1
-if [ "$conf_before" != "$(sha256sum "$ZCONF" | cut -d' ' -f1)" ] || [ "$CHANGE_LOCATION" = 1 ] || [ "$ROTATE_KEY" = 1 ]; then
+units_after=$(cat /etc/systemd/system/zerofs.service /etc/systemd/system/mnt-backups.mount \
+  /etc/systemd/system/docker.service.d/vmexec-backups.conf | sha256sum | cut -d' ' -f1)
+if [ "$conf_before" != "$(sha256sum "$ZCONF" | cut -d' ' -f1)" ] || [ "$units_before" != "$units_after" ] \
+   || [ "$CHANGE_LOCATION" = 1 ] || [ "$ROTATE_KEY" = 1 ] || ! findmnt -n "$MOUNT" >/dev/null; then
+  MOUNT_CHANGED=1
   systemctl stop mnt-backups.mount 2>/dev/null || true
   systemctl restart zerofs
-else
-  systemctl start zerofs
 fi
-systemctl start mnt-backups.mount
+systemctl start zerofs mnt-backups.mount
 findmnt -n "$MOUNT" >/dev/null || die "$MOUNT did not mount"
 probe_file="$MOUNT/.install-probe-$$"
 dd if=/dev/urandom of="$probe_file" bs=1M count=4 conv=fsync status=none && rm -f "$probe_file" \
@@ -379,7 +384,9 @@ fi
 
 # ---------------------------------------------------------------- 10. containers
 log "Containers"
-systemctl restart docker   # picks up the mount dependency; containers see the new mount
+# Containers bind /mnt/backups when they start: restart Docker (and so them)
+# only when the mount or Docker's mount dependency changed.
+if [ "$MOUNT_CHANGED" = 1 ]; then systemctl restart docker; fi
 (cd "$APP_DIR" && docker compose up -d --build)
 for _ in $(seq 1 60); do
   curl -sk -o /dev/null https://127.0.0.1:8000/ && break
