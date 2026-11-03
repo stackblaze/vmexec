@@ -17,42 +17,19 @@ from models import SessionLocal, Config, VM, BackupLog, RestoreJob
 from config_env import DATA_DIR
 from logger_util import log_info, log_warn, log_error, log_debug
 
-def cleanup_old_backups(storage, vm_name, retention_count, full_interval=7, config=None):
-    """Deletes backup folders for the specific VM based on retention policy."""
+def cleanup_old_backups(storage, vm_name, retention_count, full_interval=7, config=None, gfs=None):
+    """Applies the retention policy to the VM's restore chain.
+
+    gfs = (daily, weekly, monthly) from the VM's backup policy, if it has one.
+    """
     chain_rel = f"{vm_name}/_chain/chain.json"
     if storage.exists(chain_rel):
         from backup_manifest import load_chain
         from chain_restore import apply_chain_retention
         chain = load_chain(storage, vm_name)
         if chain:
-            apply_chain_retention(storage, vm_name, chain, retention_count, full_interval, config=config)
-        return
+            apply_chain_retention(storage, vm_name, chain, retention_count, full_interval, config=config, gfs=gfs)
 
-    vm_dir = vm_name
-    if not storage.exists(vm_dir):
-        return
-        
-    folders = storage.list_dirs(vm_dir)
-    folders = [d for d in folders if d != "_chain"]
-    full_folders = [f"{vm_name}/{d}" for d in folders]
-    full_folders.sort(reverse=True)
-
-    retention_mode = getattr(config, "retention_mode", "count") if config else "count"
-    if retention_mode == "gfs":
-        from gfs_retention import apply_gfs_to_legacy_folders
-        daily = getattr(config, "gfs_daily_keep", 7) or 7
-        weekly = getattr(config, "gfs_weekly_keep", 4) or 4
-        monthly = getattr(config, "gfs_monthly_keep", 6) or 6
-        to_delete_names = apply_gfs_to_legacy_folders(folders, daily=daily, weekly=weekly, monthly=monthly)
-        folders_to_delete = [f"{vm_name}/{d}" for d in to_delete_names]
-    else:
-        if retention_count < 1:
-            retention_count = 1
-        folders_to_delete = full_folders[retention_count:]
-
-    for f in folders_to_delete:
-        log_info(f"Retention: Removing old backup directory {f}")
-        storage.delete_dir(f)
 
 def _smtp_send(config, to_addrs: list, subject: str, body: str):
     """Low-level helper — sends one email to a list of recipients."""
@@ -112,33 +89,6 @@ def send_email_report(config, logs_today):
     _smtp_send(config, [config.smtp_to_email],
                f"VM Backup Report - {datetime.date.today()}", body)
 
-
-def authenticate_smb(config):
-    """ Authenticates to the SMB share on Windows using net use. Returns (bool, str) """
-    if os.name == 'nt' and config.smb_unc_path:
-        user_str = config.smb_user if hasattr(config, 'smb_user') else ""
-        if user_str:
-            log_info(f"Authenticating to SMB share: {config.smb_unc_path} with user {user_str}")
-        
-        # Disconnect just in case there's a stale connection
-        subprocess.run(["net", "use", config.smb_unc_path, "/delete", "/y"], capture_output=True)
-        
-        # Connect
-        cmd = ["net", "use", config.smb_unc_path]
-        if hasattr(config, 'smb_password') and config.smb_password and user_str:
-            cmd.extend([config.smb_password, f"/user:{user_str}"])
-            
-        res = subprocess.run(cmd, capture_output=True, text=True)
-        if res.returncode != 0:
-            msg = f"Warning: Failed to authenticate to SMB: {res.stderr}"
-            log_warn(msg)
-            return False, msg
-        else:
-            msg = "Successfully authenticated to SMB."
-            log_info(msg)
-            return True, msg
-            
-    return True, "Authentication skipped (not Windows or no UNC path)."
 
 def get_backup_dest_folder(vm_name):
     """ Constructs the relative destination folder string. """
@@ -208,6 +158,24 @@ def _ensure_concurrency_configured():
             configure_concurrency(config or Config())
         finally:
             db.close()
+
+
+_vm_slot_key = {}  # vm_id -> slot key taken in queue_backup (released with the same key)
+
+
+def slot_key(vm):
+    """What the per-host limit counts: the ESXi host the VM runs on.
+
+    A vCenter is ONE registration for all its hosts, so keying by the
+    registration capped every backup in the datacenter at the per-host limit
+    (2). Standalone ESXi registrations (no runtime_host) keep their own key.
+    """
+    rh = (getattr(vm, "runtime_host", "") or "").strip()
+    return f"{vm.esxi_host_id}:{rh}" if rh else vm.esxi_host_id
+
+
+def _release_vm_slot(vm_id, fallback_key):
+    _release_and_drain(_vm_slot_key.pop(vm_id, fallback_key))
 
 
 def _try_acquire_slots(host_id):
@@ -317,7 +285,7 @@ def queue_backup(vm_id: int):
         db.close()
         return
 
-    host_id = vm.esxi_host_id
+    host_id = slot_key(vm)
     acquired, reason = _try_acquire_slots(host_id)
     if not acquired:
         status = WAIT_HOST if reason == "host" else WAIT_GLOBAL
@@ -330,6 +298,7 @@ def queue_backup(vm_id: int):
         return
 
     log_info(f"[PID {pid}] Queueing backup for VM: {vm.vm_name}")
+    _vm_slot_key[vm_id] = host_id
     last_trigger_times[vm_id] = now
     vm.current_action = "Queued..."
     vm.progress = 0
@@ -432,7 +401,7 @@ def perform_backup(vm_id: int):
     if not config or not vm or not vm.esxi_host:
         log_error(f"[PID {pid}] perform_backup aborted: Missing config/vm/host for ID {vm_id}")
         if vm and vm.esxi_host_id:
-            _release_and_drain(vm.esxi_host_id)
+            _release_vm_slot(vm_id, slot_key(vm))
         db.close()
         return
 
@@ -443,9 +412,23 @@ def perform_backup(vm_id: int):
 
     storage = storage_util.get_storage(config)
 
-    # SMB Authentication (only relevant for SMB storage type)
-    if config.storage_type == "SMB":
-        authenticate_smb(config)
+    # A local-path repository must be its own mount (ZeroFS on the appliance).
+    # If it is not mounted, the path is just a folder on the root disk and
+    # backups would fill the appliance's own disk. VMEXEC_ALLOW_LOCAL_REPO=1
+    # opts out (a deliberately local folder).
+    if config.storage_type == "NFS" and os.environ.get("VMEXEC_ALLOW_LOCAL_REPO") != "1":
+        from services.status_ops import repo_mount_problem
+        problem = repo_mount_problem(config.nfs_path or "/mnt/backups")
+        if problem:
+            log_error(f"[PID {pid}] {vm.vm_name}: {problem}")
+            db.add(BackupLog(vm_name=vm.vm_name, status="Failed", message=f"Backup storage not available: {problem}"))
+            vm.current_action = ""
+            vm.progress = 0
+            vm.last_status = "Failed"
+            db.commit()
+            db.close()
+            _release_vm_slot(vm_id, host_id)
+            return
 
     si = esxi_handler.connect_esxi(host.host_ip, host.username, host.password)
     if not si:
@@ -457,8 +440,19 @@ def perform_backup(vm_id: int):
         vm.last_status = "Failed"
         db.commit()
         db.close()
-        _release_and_drain(host_id)
+        _release_vm_slot(vm_id, host_id)
         return
+
+    # Keep the VM's ESXi host current (DRS moves VMs): the per-host limit of
+    # the next run counts the right host.
+    try:
+        _obj = vsphere_context.find_vm_by_name(si, vm.vm_name)
+        _rh = _obj.runtime.host.name if _obj is not None and _obj.runtime.host is not None else ""
+        if _rh and _rh != (vm.runtime_host or ""):
+            vm.runtime_host = _rh
+            db.commit()
+    except Exception as _e:  # noqa: BLE001 - informational only
+        log_debug(f"[PID {pid}] runtime host lookup for {vm.vm_name}: {_e}")
 
     powered_off_by_us = False  # Track if we shut down the VM so we can restore it
     backup_start_time = datetime.datetime.now()
@@ -471,7 +465,6 @@ def perform_backup(vm_id: int):
 
     try:
         timeout_m = config.backup_timeout_mins if hasattr(config, 'backup_timeout_mins') else 15
-        use_cbt = getattr(config, "cbt_enabled", True) and getattr(vm, "cbt_enabled", True)
         dest_rel_dir = get_backup_dest_folder(vm.vm_name)
 
         # Excluded infrastructure VMs are skipped before anything touches them
@@ -483,34 +476,9 @@ def perform_backup(vm_id: int):
                 "Disable exclude_infra_vms in settings to override."
             )
 
-        # --- POWER OFF (if configured) ---
-        if getattr(vm, 'power_off_for_backup', False):
-            esxi_vm = vsphere_context.find_vm_by_name(si, vm.vm_name)
-            current_power = getattr(esxi_vm.runtime, 'powerState', 'poweredOff') if esxi_vm else 'poweredOff'
-            blocked = power_guard.power_off_block_reason(si, esxi_vm, vm.vm_name, host.host_ip)
-
-            if blocked and current_power != 'poweredOff':
-                msg = f"Power off for backup ignored for {vm.vm_name}: {blocked}. Backing up live instead."
-                log_warn(f"[PID {pid}] {msg}")
-                db.add(BackupLog(vm_name=vm.vm_name, status="Warning", message=msg))
-                db.commit()
-            elif current_power != 'poweredOff':
-                vm.current_action = "Shutting down VM..."
-                vm.progress = 0
-                db.commit()
-                log_info(f"[PID {pid}] Power-off-for-backup enabled. Shutting down {vm.vm_name}...")
-                ok, msg = esxi_handler.shutdown_vm(si, vm.vm_name, graceful_timeout_mins=5, connected_host=host.host_ip)
-                if not ok:
-                    raise Exception(f"Shutdown failed: {msg}")
-                powered_off_by_us = True
-                send_event_notification(
-                    "vm_powered_off",
-                    f"[VMExec] VM Powered Off: {vm.vm_name}",
-                    f"VM '{vm.vm_name}' was powered off to perform a fast backup on {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}."
-                )
-                log_info(f"[PID {pid}] {vm.vm_name} is now off. Proceeding with fast backup.")
-            else:
-                log_info(f"[PID {pid}] power_off_for_backup: VM already off, skipping shutdown step.")
+        # "Power off for backup" was removed (2026-11-03): backups always run
+        # with the VM on, from a snapshot. powered_off_by_us stays False, so
+        # the power-on step below never runs.
 
         # --- PREFLIGHT ---
         vm.current_action = "Preflight checks..."
@@ -573,71 +541,53 @@ def perform_backup(vm_id: int):
 
         success = False
         result_msg = ""
-        if use_cbt:
-            import cbt_transport
-            if cbt_transport.cbt_supported_storage(storage):
-                vm.current_action = "CBT backup..."
-                db.commit()
+        import cbt_transport
+        if not cbt_transport.cbt_supported_storage(storage):
+            # The chain backup is the only backup (the legacy whole-disk
+            # export was removed): the repository must be a mounted folder.
+            raise Exception("Backup storage cannot hold restore chains; it must be the mounted repository (/mnt/backups)")
+        vm.current_action = "CBT backup..."
+        db.commit()
 
-                def cbt_action(msg):
-                    try:
-                        vm.current_action = msg
-                        db.commit()
-                    except Exception:
-                        pass
-
-                success, result_msg, cbt_dest = cbt_transport.export_cbt_backup(
-                    si=si,
-                    vm_name=vm.vm_name,
-                    storage=storage,
-                    config=config,
-                    vm_record=vm,
-                    host_ip=host.host_ip,
-                    host_user=host.username,
-                    host_password=host.password,
-                    progress_callback=progress_cb,
-                    speed_callback=speed_cb,
-                    is_cancelled_func=cancel_check,
-                    connection_type=getattr(host, "connection_type", None) or vsphere_context.CONN_AUTO,
-                    create_snapshot_func=backup_engine._create_live_backup_snapshot,
-                    remove_snapshot_func=backup_engine._remove_backup_snapshot,
-                    download_http_func=backup_engine._download_file_http,
-                    download_http_range_func=backup_engine._download_file_http_range,
-                    action_callback=cbt_action,
-                )
-                if cbt_dest:
-                    dest_rel_dir = cbt_dest
-                if not success:
-                    # export_cbt_backup reports a user cancel as an ordinary
-                    # failure string — don't restart the cancelled work as a
-                    # legacy full backup.
-                    if cancel_check():
-                        raise BackupCancelled("Backup cancelled by user")
-                    log_warn(f"[CBT] Failed ({result_msg}); falling back to legacy full backup")
-                    vm.progress = 0
-                    vm.speed_mbps = 0.0
-                    vm.current_action = "Fallback: full backup via NBD..."
-                    db.commit()
-            else:
-                log_warn("[CBT] S3 storage detected; using legacy full backup")
-
-        if not success:
-            success, result_msg = backup_engine.export_vm_native(
+        # Two tries on the chain path, each with its own snapshot. A failed
+        # try leaves nothing behind (export_cbt_backup removes the incomplete
+        # point) and the chain is unchanged, so the second try is the same
+        # backup again, not a resume.
+        cbt_attempt = 1
+        while True:
+            success, result_msg, cbt_dest = cbt_transport.export_cbt_backup(
                 si=si,
                 vm_name=vm.vm_name,
                 storage=storage,
-                dest_rel_dir=dest_rel_dir,
-                progress_callback=progress_cb,
-                speed_callback=speed_cb,
-                is_cancelled_func=cancel_check,
-                max_retries=3,
                 config=config,
+                vm_record=vm,
                 host_ip=host.host_ip,
                 host_user=host.username,
                 host_password=host.password,
+                progress_callback=progress_cb,
+                speed_callback=speed_cb,
+                is_cancelled_func=cancel_check,
                 connection_type=getattr(host, "connection_type", None) or vsphere_context.CONN_AUTO,
+                create_snapshot_func=backup_engine._create_live_backup_snapshot,
+                remove_snapshot_func=backup_engine._remove_backup_snapshot,
+                download_http_func=backup_engine._download_file_http,
+                download_http_range_func=backup_engine._download_file_http_range,
                 action_callback=action_cb,
             )
+            if success or cancel_check() or cbt_attempt >= 2:
+                break
+            log_warn(f"[CBT] Attempt {cbt_attempt} failed ({result_msg}); trying once more")
+            cbt_attempt += 1
+            vm.progress = 0
+            vm.speed_mbps = 0.0
+            vm.current_action = "Retrying backup..."
+            db.commit()
+        if cbt_dest:
+            dest_rel_dir = cbt_dest
+        if not success:
+            if cancel_check():
+                raise BackupCancelled("Backup cancelled by user")
+            result_msg = f"Backup failed after 2 attempts: {result_msg}"
 
         if not success and "cancelled" in (result_msg or "").lower():
             raise BackupCancelled(result_msg)
@@ -664,12 +614,9 @@ def perform_backup(vm_id: int):
         
         if success:
             full_interval = getattr(config, "cbt_full_interval", 7) or 7
-            cleanup_old_backups(storage, vm.vm_name, vm.retention_count, full_interval, config=config)
-            try:
-                from compression_util import compress_legacy_backup_dir
-                compress_legacy_backup_dir(storage, dest_rel_dir, config)
-            except Exception as comp_err:
-                log_warn(f"[COMPRESS] Legacy compression error: {comp_err}")
+            from services.policy_ops import retention_for
+            cleanup_old_backups(storage, vm.vm_name, vm.retention_count, full_interval,
+                                config=config, gfs=retention_for(vm))
             if getattr(config, "secondary_copy_enabled", False):
                 vm.current_action = "Secondary copy..."
                 vm.last_secondary_copy_status = "copying"
@@ -720,6 +667,8 @@ def perform_backup(vm_id: int):
                 f"Error      : {log_msg}\n"
             )
             send_event_notification("backup_failure", f"[VMExec] ✗ Backup FAILED: {vm.vm_name}", rich_body)
+            from services import alert_ops
+            alert_ops.send(config, "failure", f"Backup of {vm.vm_name} failed: {(log_msg or '')[:300]}")
             send_email_report(config, [BackupLog(vm_name=vm.vm_name, status="Failed", message=log_msg)])
 
         db.commit()
@@ -803,7 +752,7 @@ def perform_backup(vm_id: int):
             _time_limit_stopped.discard(vm_id)
         esxi_handler.Disconnect(si)
         db.close()
-        _release_and_drain(host_id)
+        _release_vm_slot(vm_id, host_id)
 
 
 
@@ -871,9 +820,6 @@ def get_available_backups(config):
     import json
     import re
     storage = storage_util.get_storage(config)
-    if config.storage_type == "SMB":
-        authenticate_smb(config)
-
     def _format_point_id(point_id):
         m = re.match(r"^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})$", point_id or "")
         if m:
@@ -928,45 +874,6 @@ def get_available_backups(config):
                 except Exception as e:
                     log_warn(f"[SCAN] CBT chain scan error for {vm_name}: {e}")
 
-            # Legacy date folders
-            date_folders = storage.list_dirs(vm_name)
-            date_folders = [d for d in date_folders if d != "_chain"]
-            log_info(f"[SCAN] VM '{vm_name}' -> {len(date_folders)} date folders: {date_folders}")
-            for date_folder in date_folders:
-                rel_date_dir = f"{vm_name}/{date_folder}"
-                
-                # Look for descriptor files
-                files = storage.list_files(rel_date_dir)
-                log_info(f"[SCAN]   {rel_date_dir} -> files: {files}")
-                found_vmx = next((f for f in files if f.endswith('.vmx')), None)
-                found_ovf = next((f for f in files if f.endswith('.ovf')), None)
-                found_ova = next((f for f in files if f.endswith('.ova')), None)
-                
-                backup_file_rel = None
-                if found_vmx: backup_file_rel = f"{rel_date_dir}/{found_vmx}"
-                elif found_ovf: backup_file_rel = f"{rel_date_dir}/{found_ovf}"
-                elif found_ova: backup_file_rel = f"{rel_date_dir}/{found_ova}"
-                
-                if backup_file_rel:
-                    size_bytes = storage.get_size(rel_date_dir)
-                    size_str = f"{size_bytes / (1024**3):.2f} GB" if size_bytes > 1024**3 else f"{size_bytes / (1024**2):.2f} MB"
-                    
-                    # Store either absolute path (Local) or S3 URI
-                    full_path = ""
-                    if hasattr(storage, '_full_path'):
-                        full_path = storage._full_path(backup_file_rel)
-                    else:
-                        full_path = f"{storage.get_base_path()}{backup_file_rel}"
-
-                    backups.append({
-                        "vm_name": vm_name,
-                        "date": date_folder,
-                        "display_date": date_folder,
-                        "path": full_path,
-                        "size": size_str,
-                        "backup_type": "legacy",
-                        "point_type": "full",
-                    })
     except Exception as e:
         import traceback
         log_error(f"Error scanning storage repository: {e}\n{traceback.format_exc()}")
@@ -1050,16 +957,40 @@ def perform_restore(config, target_ip, target_user, target_password, source_ova_
         # with no upload activity; surface it so the UI isn't frozen at 2%.
         update_job(3, action="Materializing backup chain (this can take several minutes)...")
 
-        log_info(f"[RESTORE] Calling backup_engine.import_vm_native...")
-        success, msg = backup_engine.import_vm_native(
-            si=si,
-            storage=storage,
-            source_rel_dir=source_rel_dir,
-            target_ds=datastore,
-            target_name=target_name,
-            progress_callback=lambda p: update_job(p, action=f"Restoring files ({p}%)..."),
-            is_cancelled_func=is_cancelled
-        )
+        def old_path():
+            log_info(f"[RESTORE] Calling backup_engine.import_vm_native...")
+            return backup_engine.import_vm_native(
+                si=si,
+                storage=storage,
+                source_rel_dir=source_rel_dir,
+                target_ds=datastore,
+                target_name=target_name,
+                progress_callback=lambda p: update_job(p, action=f"Restoring files ({p}%)..."),
+                is_cancelled_func=is_cancelled
+            )
+
+        # Fast path first: thin disks written through VDDK, data only
+        # (restore_vddk.py). It refuses before changing anything when the
+        # point needs the old path, and removes its partial VM if it fails.
+        import restore_vddk
+        try:
+            update_job(4, action="Restoring (thin disks via VDDK)...")
+            success, msg = restore_vddk.restore_point(
+                si, storage, source_rel_dir, datastore, target_name,
+                target_ip, target_user, target_password, config=config,
+                progress_callback=lambda p: update_job(p, action=f"Restoring via VDDK ({p}%)..."),
+                is_cancelled_func=is_cancelled,
+                upload_file=lambda si_, ds, dest, st, src, dc: backup_engine._upload_file_http(
+                    si_, ds, dest, st, src, is_cancelled, None, 0, 0, dc_path=dc),
+            )
+        except restore_vddk.FastRestoreUnsupported as why:
+            log_info(f"[RESTORE] Fast path not used ({why}); using the full-copy path")
+            success, msg = old_path()
+        except Exception as fast_err:
+            if is_cancelled():
+                raise
+            log_warn(f"[RESTORE] Fast path failed ({str(fast_err)[:300]}); retrying with the full-copy path")
+            success, msg = old_path()
 
         if success:
             update_job(100, action="Completed", status="Success")

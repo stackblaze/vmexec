@@ -6,6 +6,8 @@ import datetime
 import os
 import shutil
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import backup_manifest as bm
 import cbt_core
@@ -17,6 +19,25 @@ from logger_util import log_info, log_warn, log_error
 def cbt_supported_storage(storage):
     base = storage.get_base_path() if storage else ""
     return not str(base).startswith("s3://")
+
+
+class _DisksCancelled(Exception):
+    """A disk worker saw the user's cancel."""
+
+
+def _plain_config(config):
+    """Column values of a Config row as a plain object (safe across threads)."""
+    if config is None or not hasattr(config, "__table__"):
+        return config
+    from types import SimpleNamespace
+    return SimpleNamespace(**{c.name: getattr(config, c.name) for c in config.__table__.columns})
+
+
+def _parallel_disks():
+    try:
+        return max(1, min(16, int(os.environ.get("VMEXEC_PARALLEL_DISKS", "4"))))
+    except ValueError:
+        return 4
 
 
 def plan_backup_dest(vm_name, use_cbt):
@@ -97,6 +118,7 @@ def export_cbt_backup(
 
     snap_obj = None
     snap_name = None
+    point_committed = False
 
     try:
         if progress_callback:
@@ -129,9 +151,15 @@ def export_cbt_backup(
         total_disks = len(disks)
         progress_bands = _disk_progress_bands(disks)
 
-        for idx, disk in enumerate(disks):
+        # Disk threads must never touch the DB session: reading an attribute
+        # of an ORM object after a commit (expired) emits SQL, which collided
+        # with another thread's progress commit ("session is in 'prepared'
+        # state", Central 2026-11-03). They get a plain copy of the settings.
+        config = _plain_config(config)
+
+        def _do_disk(idx, disk, progress_callback, speed_callback):
             if is_cancelled_func and is_cancelled_func():
-                return False, "Backup cancelled by user", None
+                raise _DisksCancelled()
 
             disk_basename = os.path.basename(disk["rel_path"])
             flat_basename = disk_basename.replace(".vmdk", "-flat.vmdk")
@@ -186,10 +214,35 @@ def export_cbt_backup(
                         )
 
                     nfc_ok = vsphere_context.supports_nfc_export(si, connection_type)
-                    if not vddk_transport.is_available(config) and nfc_ok:
-                        # VDDK not installed: NFC is the normal transport,
-                        # not a degraded fallback — dispatch directly, no
-                        # warning per disk.
+                    # Only the areas in use (QueryChangedDiskAreas "*"):
+                    # unused space is never read or stored. Any problem
+                    # (no CBT on the disk, a query error, a read error)
+                    # falls back to reading the whole disk below.
+                    used_done = False
+                    if change_id and vddk_transport.is_available(config):
+                        try:
+                            used = cbt_core.query_changed_areas(vm, snap_obj, device_key, "*", capacity)
+                            if used:
+                                vddk_transport.stream_snapshot_areas(
+                                    si, vm, snap_obj, disk, used,
+                                    host_ip, host_user, host_password,
+                                    storage, flat_rel, config=config,
+                                    connection_type=connection_type,
+                                    is_cancelled_func=is_cancelled_func,
+                                    progress_callback=progress_callback,
+                                    progress_base=step_base + 2,
+                                    progress_total=max(step_end - step_base - 2, 1),
+                                    speed_callback=speed_callback,
+                                )
+                                used_done = True
+                        except Exception as used_err:
+                            if is_cancelled_func and is_cancelled_func():
+                                raise
+                            log_warn(f"[CBT] Used-areas full failed ({str(used_err)[:200]}); "
+                                     "reading the whole disk")
+                    if used_done:
+                        pass
+                    elif not vddk_transport.is_available(config) and nfc_ok:
                         log_info(
                             f"[CBT] VDDK not installed; streaming full disk "
                             f"via NFC ExportSnapshot"
@@ -224,7 +277,7 @@ def export_cbt_backup(
                                 _stream_full_nfc()
                             else:
                                 raise
-                disk_manifest_entries.append(bm.build_disk_entry(
+                entry = (bm.build_disk_entry(
                     device_key, disk_basename, flat_basename, capacity,
                     change_id, "full",
                 ))
@@ -235,8 +288,8 @@ def export_cbt_backup(
                     if comp_level > 0:
                         flat_rel = compress_storage_file(storage, flat_rel, comp_level)
                         if flat_rel.endswith(".gz"):
-                            disk_manifest_entries[-1]["flat_basename"] = flat_basename + ".gz"
-                            disk_manifest_entries[-1]["storage_flat"] = flat_rel.split("/")[-1]
+                            entry["flat_basename"] = flat_basename + ".gz"
+                            entry["storage_flat"] = flat_rel.split("/")[-1]
             else:
                 prev_disk = _find_prev_disk_entry(storage, vm_name, parent_id, device_key)
                 prev_change_id = prev_disk.get("change_id") if prev_disk else "*"
@@ -259,12 +312,48 @@ def export_cbt_backup(
                     progress_total=max(step_end - step_base - 2, 1),
                 )
                 _write_delta_storage(storage, delta_rel, extents, config)
-                disk_manifest_entries.append(bm.build_disk_entry(
+                entry = (bm.build_disk_entry(
                     device_key, disk_basename, flat_basename, capacity,
                     change_id, "incremental", delta_file=delta_name,
                 ))
                 if progress_callback:
                     progress_callback(step_end)
+            return entry
+
+        # Disks run in parallel (VMEXEC_PARALLEL_DISKS, default 4): each has
+        # its own nbdkit/VDDK session. Progress is combined by capacity and
+        # the callbacks (which write the job row) are serialised.
+        parallel = max(1, min(_parallel_disks(), total_disks))
+        caps = [max(int(d.get("capacity_bytes") or 0), 1) for d in disks]
+        done = [0.0] * total_disks
+        speeds = [0.0] * total_disks
+        cb_lock = threading.Lock()
+
+        def _disk_callbacks(i):
+            base, end = progress_bands[i]
+
+            def prog(p):
+                with cb_lock:
+                    done[i] = min(max((p - base) / max(end - base, 1), 0.0), 1.0) * caps[i]
+                    if progress_callback:
+                        progress_callback(5 + int(85 * sum(done) / sum(caps)))
+
+            def spd(mbps):
+                with cb_lock:
+                    speeds[i] = float(mbps or 0.0)
+                    if speed_callback:
+                        speed_callback(round(sum(speeds), 1))
+
+            return prog, spd
+
+        if parallel > 1:
+            log_info(f"[CBT] {total_disks} disk(s), {parallel} at a time")
+        try:
+            with ThreadPoolExecutor(max_workers=parallel, thread_name_prefix="disk") as ex:
+                futures = [ex.submit(_do_disk, i, d, *_disk_callbacks(i)) for i, d in enumerate(disks)]
+                disk_manifest_entries = [f.result() for f in futures]
+        except _DisksCancelled:
+            return False, "Backup cancelled by user", None
 
         if progress_callback:
             progress_callback(93)
@@ -301,6 +390,7 @@ def export_cbt_backup(
             "timestamp": dt.datetime.utcnow().isoformat() + "Z",
         })
         bm.save_chain(storage, vm_name, chain)
+        point_committed = True
 
         if progress_callback:
             progress_callback(100)
@@ -315,6 +405,16 @@ def export_cbt_backup(
                 pass
         log_error(f"[CBT] Backup failed: {e}")
         return False, str(e), None
+    finally:
+        # A point that never reached the chain index is not a restore point:
+        # remove its folder (it held up to a full disk image, also in S3).
+        if not point_committed:
+            try:
+                if storage.exists(dest_rel_dir):
+                    storage.delete_dir(dest_rel_dir)
+                    log_info(f"[CBT] Removed incomplete point {dest_rel_dir}")
+            except Exception as clean_err:  # noqa: BLE001
+                log_warn(f"[CBT] Could not remove incomplete point {dest_rel_dir}: {clean_err}")
 
 
 def _find_prev_disk_entry(storage, vm_name, parent_id, device_key):
@@ -510,12 +610,3 @@ def _read_range_http(si, disk, start, length, download_http_range_func, vm, conn
     )
 
 
-def _read_range_nbd(
-    si, vm, snap_obj, disk, start, length,
-    host_ip, host_user, host_password, config, connection_type,
-):
-    import vddk_transport
-    return vddk_transport.read_snapshot_extent(
-        si, vm, snap_obj, disk, start, length,
-        host_ip, host_user, host_password, config, connection_type,
-    )

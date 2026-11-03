@@ -62,26 +62,31 @@ Light, Dark, and Cyberpunk themes. Guided **setup wizard** for first-run. Schedu
 
 ---
 
-## Quick start (Docker)
+## Install (one line)
+
+On a fresh **Ubuntu 22.04 or 24.04** VM (x86_64, 2+ CPUs, 4 GB+ RAM, 20 GB free on `/`, plus a blank disk of 100 GB+ for the cache):
 
 ```bash
-git clone https://github.com/stackblaze-adam/vmexec.git
-cd vmexec
-
-python init_db.py
-docker compose up -d
+curl -fsSL https://raw.githubusercontent.com/stackblaze/vmexec/main/install.sh | sudo bash
 ```
 
-Open **https://localhost:8000** (accept the self-signed certificate warning).
+The installer checks the VM and installs everything VMExec needs (Docker, Python, kernel 9P support). It then asks a few questions:
 
-| | |
-|---|---|
-| **Username** | `admin` |
-| **Password** | `admin` |
+1. **S3 storage:** endpoint, region, bucket, folder and key. The key is checked against the bucket straight away.
+2. **Cache disk:** pick a blank disk. It is formatted and used as a local cache. Backups live in S3, so this disk never fills up.
+3. **VMware VDDK:** the path to `VMware-vix-disklib-*.x86_64.tar.gz`. VMware does not allow it to be redistributed, so download it from [Broadcom](https://developer.broadcom.com/sdks/vmware-virtual-disk-development-kit-vddk/latest) and copy it to the VM first.
+4. **vCenter:** address and a backup account (optional, or later in Settings).
+5. **A name** for alerts.
 
-> Set up MFA on first login, then change the admin password under **Users**.
+It shows a summary and only changes things after you confirm. Backups are stored through [ZeroFS](https://github.com/Barre/ZeroFS), encrypted with a password the installer generates and saves to `/root/vmexec-zerofs-password.txt`. **Keep that password safe:** without it the backups cannot be read.
 
-### Windows Server
+Re-running the installer is safe: it changes only what is different. To rebuild an appliance from its backups on a new VM, run it with the same bucket and folder and choose **recover** (you need the encryption password).
+
+Without questions, for automation: `curl -fsSL …/install.sh | sudo bash -s -- --bucket B --s3-endpoint URL --s3-region R --credentials-file F --vddk TARBALL`. See `deploy/install.sh --help` for all options.
+
+Open **https://&lt;vm-ip&gt;:8000**. The first login is `admin` / `admin`; you are asked to set up MFA, then change the password under **Settings → Users**.
+
+### Windows Server (legacy, without ZeroFS)
 
 1. Download the latest release from [Releases](https://github.com/stackblaze-adam/vmexec/releases)
 2. Extract and run **`setup.bat`** as Administrator

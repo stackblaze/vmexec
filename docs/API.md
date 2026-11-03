@@ -90,9 +90,7 @@ curl -sk https://backups-us-east-1.stackblaze.cloud/api/v1/vms \
 
 ### Config
 - `GET /config` — read all settings
-- `PUT /config` — update storage + email settings
-- `PUT /config/storage` — update storage only
-- `POST /config/storage/test` — test storage connection
+- `PUT /config` — update settings (backup storage is the ZeroFS mount set by the installer; the API cannot change it)
 - `POST /config/email/test` — send test email
 
 ### ESXi Hosts
@@ -121,15 +119,6 @@ curl -sk https://backups-us-east-1.stackblaze.cloud/api/v1/vms \
 
 ### Monitoring
 - `GET /jobs/progress` — live backup progress per VM
-
-## Example: configure NFS storage
-
-```bash
-curl -sk -X PUT https://backups-us-east-1.stackblaze.cloud/api/v1/config/storage \
-  -H "Authorization: Bearer $NOVABAK_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"storage_type":"NFS","nfs_path":"/mnt/backups"}'
-```
 
 ## Example: trigger a backup
 

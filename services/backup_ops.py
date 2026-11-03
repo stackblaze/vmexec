@@ -72,120 +72,71 @@ def config_to_dict(config):
         "imap_port": config.imap_port,
         "imap_user": config.imap_user,
         "imap_use_ssl": config.imap_use_ssl,
+        "alert_webhook_set": bool(getattr(config, "alert_webhook_url", "") or ""),
+        "alert_webhook_hint": _webhook_hint(getattr(config, "alert_webhook_url", "") or ""),
+        "alert_on_failure": bool(getattr(config, "alert_on_failure", True)),
+        "alert_on_missed": bool(getattr(config, "alert_on_missed", True)),
+        "alert_on_storage": bool(getattr(config, "alert_on_storage", True)),
     }
 
 
-def update_storage_config(db, data):
-    config = get_or_create_config(db)
-    if "storage_type" in data and data["storage_type"] is not None:
-        config.storage_type = data["storage_type"]
-    if "nfs_path" in data and data["nfs_path"] is not None:
-        config.nfs_path = data["nfs_path"]
-    if "smb_unc_path" in data and data["smb_unc_path"] is not None:
-        config.smb_unc_path = data["smb_unc_path"]
-    if "smb_user" in data and data["smb_user"] is not None:
-        config.smb_user = data["smb_user"]
-    if data.get("smb_password"):
-        config.smb_password = data["smb_password"]
-    if "s3_endpoint" in data and data["s3_endpoint"] is not None:
-        config.s3_endpoint = data["s3_endpoint"]
-    if "s3_bucket" in data and data["s3_bucket"] is not None:
-        config.s3_bucket = data["s3_bucket"]
-    if "s3_region" in data and data["s3_region"] is not None:
-        config.s3_region = data["s3_region"]
-    if data.get("s3_access_key"):
-        config.s3_access_key = data["s3_access_key"]
-    if data.get("s3_secret_key"):
-        config.s3_secret_key = data["s3_secret_key"]
-    if "perf_parallel_threads" in data and data["perf_parallel_threads"] is not None:
-        config.perf_parallel_threads = data["perf_parallel_threads"]
-    if "perf_compression_level" in data and data["perf_compression_level"] is not None:
-        config.perf_compression_level = data["perf_compression_level"]
-    if "backup_timeout_mins" in data and data["backup_timeout_mins"] is not None:
-        config.backup_timeout_mins = data["backup_timeout_mins"]
-    if "max_global_backups" in data and data["max_global_backups"] is not None:
-        config.max_global_backups = data["max_global_backups"]
-    if "max_backups_per_host" in data and data["max_backups_per_host"] is not None:
-        config.max_backups_per_host = data["max_backups_per_host"]
-    if "max_schedules_per_hour" in data and data["max_schedules_per_hour"] is not None:
-        config.max_schedules_per_hour = max(1, min(12, int(data["max_schedules_per_hour"])))
-    if "datastore_min_free_pct" in data and data["datastore_min_free_pct"] is not None:
-        config.datastore_min_free_pct = data["datastore_min_free_pct"]
-    if "datastore_headroom_gb" in data and data["datastore_headroom_gb"] is not None:
-        config.datastore_headroom_gb = data["datastore_headroom_gb"]
-    if "datastore_est_multiplier" in data and data["datastore_est_multiplier"] is not None:
-        config.datastore_est_multiplier = data["datastore_est_multiplier"]
-    if "backup_transport" in data and data["backup_transport"] is not None:
-        t = str(data["backup_transport"]).lower()
-        if t in ("legacy", "nbd", "nfc"):
-            config.backup_transport = t
-    if "repo_min_free_gb" in data and data["repo_min_free_gb"] is not None:
-        config.repo_min_free_gb = max(1, min(10000, int(data["repo_min_free_gb"])))
-    if "exclude_infra_vms" in data and data["exclude_infra_vms"] is not None:
-        config.exclude_infra_vms = bool(data["exclude_infra_vms"])
-    if "vddk_libdir" in data and data["vddk_libdir"] is not None:
-        config.vddk_libdir = data["vddk_libdir"]
-    if "cbt_enabled" in data and data["cbt_enabled"] is not None:
-        config.cbt_enabled = bool(data["cbt_enabled"])
-    if "cbt_full_interval" in data and data["cbt_full_interval"] is not None:
-        config.cbt_full_interval = max(1, min(60, int(data["cbt_full_interval"])))
-    if "retention_mode" in data and data["retention_mode"] is not None:
-        mode = str(data["retention_mode"]).lower()
-        if mode in ("count", "gfs"):
-            config.retention_mode = mode
-    if "gfs_daily_keep" in data and data["gfs_daily_keep"] is not None:
-        config.gfs_daily_keep = max(1, min(90, int(data["gfs_daily_keep"])))
-    if "gfs_weekly_keep" in data and data["gfs_weekly_keep"] is not None:
-        config.gfs_weekly_keep = max(0, min(52, int(data["gfs_weekly_keep"])))
-    if "gfs_monthly_keep" in data and data["gfs_monthly_keep"] is not None:
-        config.gfs_monthly_keep = max(0, min(120, int(data["gfs_monthly_keep"])))
-    if "secondary_copy_enabled" in data and data["secondary_copy_enabled"] is not None:
-        config.secondary_copy_enabled = bool(data["secondary_copy_enabled"])
-    if "secondary_storage_type" in data and data["secondary_storage_type"] is not None:
-        config.secondary_storage_type = data["secondary_storage_type"]
-    if "secondary_nfs_path" in data and data["secondary_nfs_path"] is not None:
-        config.secondary_nfs_path = data["secondary_nfs_path"]
-    if "secondary_smb_unc_path" in data and data["secondary_smb_unc_path"] is not None:
-        config.secondary_smb_unc_path = data["secondary_smb_unc_path"]
-    if "secondary_smb_user" in data and data["secondary_smb_user"] is not None:
-        config.secondary_smb_user = data["secondary_smb_user"]
-    if data.get("secondary_smb_password"):
-        config.secondary_smb_password = data["secondary_smb_password"]
-    if "secondary_s3_endpoint" in data and data["secondary_s3_endpoint"] is not None:
-        config.secondary_s3_endpoint = data["secondary_s3_endpoint"]
-    if data.get("secondary_s3_access_key"):
-        config.secondary_s3_access_key = data["secondary_s3_access_key"]
-    if data.get("secondary_s3_secret_key"):
-        config.secondary_s3_secret_key = data["secondary_s3_secret_key"]
-    if "secondary_s3_bucket" in data and data["secondary_s3_bucket"] is not None:
-        config.secondary_s3_bucket = data["secondary_s3_bucket"]
-    if "secondary_s3_region" in data and data["secondary_s3_region"] is not None:
-        config.secondary_s3_region = data["secondary_s3_region"]
-    db.commit()
-    db.refresh(config)
-    return config
+def restore_point_counts(config, vm_names):
+    """{vm_name: number of restore points} from each VM's chain index.
+
+    Local-path repositories only (ZeroFS/NFS: one small file read per VM);
+    an S3 repository would need a request per VM, so it reports nothing.
+    """
+    out = {}
+    if not config or config.storage_type != "NFS" or not vm_names:
+        return out
+    try:
+        import storage_util
+        from backup_manifest import load_chain
+        storage = storage_util.get_storage(config)
+        for name in vm_names:
+            try:
+                chain = load_chain(storage, name)
+                out[name] = len(chain.get("points", [])) if chain else 0
+            except Exception:  # noqa: BLE001 - one unreadable chain must not break the list
+                continue
+    except Exception:  # noqa: BLE001
+        return {}
+    return out
+
+
+def _webhook_hint(url):
+    from services.alert_ops import webhook_hint
+    return webhook_hint(url)
 
 
 def update_full_config(db, data):
     config = get_or_create_config(db)
-    storage_fields = {
-        "storage_type", "nfs_path", "smb_unc_path", "smb_user", "s3_endpoint",
-        "s3_bucket", "s3_region", "perf_parallel_threads", "perf_compression_level",
-        "backup_timeout_mins",
+    # Primary storage is the ZeroFS mount set up by deploy/install.sh (and
+    # services.appliance_setup storage); the API never changes it.
+    primary_storage_fields = {
+        "storage_type", "nfs_path", "smb_unc_path", "smb_user", "smb_password",
+        "s3_endpoint", "s3_bucket", "s3_region", "s3_access_key", "s3_secret_key",
     }
     email_fields = {
         "smtp_server", "smtp_port", "smtp_user", "smtp_to_email", "smtp_use_tls",
         "smtp_use_ssl", "imap_server", "imap_port", "imap_user", "imap_use_ssl",
     }
-    secret_fields = {"smb_password", "smtp_password", "imap_password", "s3_access_key", "s3_secret_key"}
+    secret_fields = {"smtp_password", "imap_password"}
+
+    url = data.get("alert_webhook_url")
+    if url:
+        url = url.strip()
+        if not url.startswith("https://"):
+            raise ValueError("The webhook URL must start with https://")
+        data = {**data, "alert_webhook_url": url}
 
     for key, value in data.items():
-        if value is None:
+        if value is None or key in primary_storage_fields:
             continue
         if key in secret_fields:
             if value:
                 setattr(config, key, value)
-        elif key in storage_fields or key in email_fields or hasattr(config, key):
+        elif key in email_fields or hasattr(config, key):
             setattr(config, key, value)
     db.commit()
     db.refresh(config)
@@ -218,22 +169,6 @@ def test_smtp(db):
         return True, f"Test email sent to {config.smtp_to_email}"
     except Exception as e:
         return False, str(e)
-
-
-def test_storage(db):
-    config = db.query(Config).first()
-    if not config:
-        return False, "No configuration found."
-    try:
-        storage = storage_util.get_storage(config)
-        if config.storage_type == "SMB":
-            success, msg = worker.authenticate_smb(config)
-            if not success:
-                return False, msg
-        storage.list_dirs("")
-        return True, f"Successfully connected to {config.storage_type} storage."
-    except Exception as e:
-        return False, f"Connection failed: {str(e)}"
 
 
 def host_to_dict(host, include_secrets=False):
@@ -337,6 +272,7 @@ def sync_vms_for_host(db, host_id):
                 memory_mb=vm_data.get("memory_mb", 0),
                 storage_gb=vm_data.get("storage_gb", 0.0),
                 power_state=vm_data.get("power_state", "Unknown"),
+                runtime_host=vm_data.get("runtime_host", ""),
             )
             db.add(new_vm)
             synced.append(vm_data["name"])
@@ -346,6 +282,7 @@ def sync_vms_for_host(db, host_id):
             vm.memory_mb = vm_data.get("memory_mb", 0)
             vm.storage_gb = vm_data.get("storage_gb", 0.0)
             vm.power_state = vm_data.get("power_state", "Unknown")
+            vm.runtime_host = vm_data.get("runtime_host", "") or vm.runtime_host
             if vm.esxi_host_id != host.id:
                 vm.esxi_host_id = host.id
 
@@ -421,25 +358,18 @@ def vm_to_dict(vm, last_backup_message=None, config=None):
         "host_name": vm.esxi_host.name if vm.esxi_host else "",
         "last_secondary_copy_status": getattr(vm, "last_secondary_copy_status", None) or "none",
         "last_backup_message": last_backup_message,
+        "policy_id": getattr(vm, "policy_id", None),
+        "policy_name": vm.policy.name if getattr(vm, "policy", None) else None,
     }
-
-
-class PowerOffNotAllowed(Exception):
-    """power_off_for_backup requested for a VM VMExec must never power off."""
 
 
 def update_vm_job(db, vm_id, data):
     vm = db.query(VM).filter(VM.id == vm_id).first()
     if not vm:
         raise ValueError("VM not found")
-    if data.get("power_off_for_backup"):
-        import power_guard
-        blocked = power_guard.name_block_reason(vm.vm_name)
-        if blocked:
-            raise PowerOffNotAllowed(f"{vm.vm_name} cannot be powered off for backup: {blocked}.")
     for field in (
         "is_selected", "schedule_hour", "schedule_minute", "retention_count",
-        "is_job_active", "power_off_for_backup", "cbt_enabled", "schedule_frequency",
+        "is_job_active", "cbt_enabled", "schedule_frequency",
     ):
         if field in data and data[field] is not None:
             setattr(vm, field, data[field])
@@ -593,8 +523,6 @@ def get_vm_chain(db, vm_name):
     if not config:
         raise ValueError("No configuration found")
     storage = storage_util.get_storage(config)
-    if config.storage_type == "SMB":
-        worker.authenticate_smb(config)
     import chain_ops
     view = chain_ops.get_vm_chain_view(storage, vm_name)
     if not view:
@@ -687,8 +615,6 @@ def start_restore(db, target_esxi_id, source_ova, target_name, datastore):
     target_host = db.query(ESXiHost).filter(ESXiHost.id == target_esxi_id).first()
     if not config or not target_host:
         raise ValueError("Invalid configuration or ESXi host")
-    if config.storage_type == "SMB":
-        worker.authenticate_smb(config)
     restore_job = RestoreJob(
         target_name=target_name,
         target_esxi_host=target_host.name,
@@ -890,8 +816,6 @@ def _cached_storage_scan(config):
         result.update(disk)
 
     try:
-        if config.storage_type == "SMB":
-            worker.authenticate_smb(config)
         backups = worker.get_available_backups(config)
         total_bytes = sum(_parse_backup_size_bytes(b.get("size")) for b in backups)
         vm_names = {b["vm_name"] for b in backups}

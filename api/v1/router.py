@@ -7,7 +7,7 @@ import auth
 from api.deps import get_db, get_api_user, require_api_role, bearer_scheme, _user_from_token, cookie_sec
 from api.schemas import (
     LoginRequest, TokenResponse, ApiKeyCreateRequest, ApiKeyCreateResponse, ApiKeyInfo,
-    StorageConfigUpdate, ConfigResponse, ConfigUpdate, TestResult,
+    ConfigResponse, ConfigUpdate, TestResult,
     ESXiHostCreate, ESXiHostResponse, VmUpdate, VmResponse, SyncResult,
     InventoryApplyRequest,
     UserResponse, UserCreateRequest, UserCreateResponse, UserRoleUpdate,
@@ -15,6 +15,7 @@ from api.schemas import (
     RestoreCreateRequest, RestoreResponse, OverviewResponse,
     SessionLoginRequest, SessionLoginResponse, SessionMfaRequest,
     MfaSetupRequest, MfaSetupStartResponse, BootstrapResponse,
+    PolicyResponse, PolicyCreate, PolicyUpdate, PolicyAssign, AlertTestRequest,
 )
 from models import User, ApiKey, ESXiHost, VM
 from services import backup_ops
@@ -208,24 +209,25 @@ def update_config(
     db: Session = Depends(get_db),
     user: User = Depends(require_api_role("admin")),
 ):
-    config = backup_ops.update_full_config(db, body.model_dump(exclude_unset=True))
+    try:
+        config = backup_ops.update_full_config(db, body.model_dump(exclude_unset=True))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return ConfigResponse(**backup_ops.config_to_dict(config))
 
 
-@router.put("/config/storage", response_model=ConfigResponse)
-def update_storage(
-    body: StorageConfigUpdate,
+@router.post("/config/alerts/test", response_model=TestResult)
+def test_alert(
+    body: AlertTestRequest,
     db: Session = Depends(get_db),
     user: User = Depends(require_api_role("admin")),
 ):
-    config = backup_ops.update_storage_config(db, body.model_dump(exclude_unset=True))
-    return ConfigResponse(**backup_ops.config_to_dict(config))
-
-
-@router.post("/config/storage/test", response_model=TestResult)
-def test_storage(db: Session = Depends(get_db), user: User = Depends(require_api_role("admin", "operator"))):
-    ok, message = backup_ops.test_storage(db)
-    return TestResult(ok=ok, message=message)
+    from services import alert_ops
+    url = (body.url or "").strip() or (backup_ops.get_or_create_config(db).alert_webhook_url or "")
+    if not url.startswith("https://"):
+        return TestResult(ok=False, message="Set an https:// webhook URL first.")
+    ok, msg = alert_ops.test(url)
+    return TestResult(ok=ok, message=msg)
 
 
 @router.post("/config/email/test", response_model=TestResult)
@@ -410,7 +412,9 @@ def list_vms(db: Session = Depends(get_db), user: User = Depends(get_api_user)):
     messages = backup_ops.latest_backup_messages(db, [v.vm_name for v in vms])
     from models import Config
     config = db.query(Config).first()
-    return [VmResponse(**backup_ops.vm_to_dict(v, messages.get(v.vm_name), config)) for v in vms]
+    points = backup_ops.restore_point_counts(config, [v.vm_name for v in vms if v.is_selected])
+    return [VmResponse(**backup_ops.vm_to_dict(v, messages.get(v.vm_name), config),
+                       restore_points=points.get(v.vm_name)) for v in vms]
 
 
 @router.patch("/vms/{vm_id}", response_model=VmResponse)
@@ -422,14 +426,81 @@ def patch_vm(
 ):
     try:
         vm = backup_ops.update_vm_job(db, vm_id, body.model_dump(exclude_unset=True))
-    except backup_ops.PowerOffNotAllowed as e:
-        raise HTTPException(status_code=400, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     from models import Config
     return VmResponse(**backup_ops.vm_to_dict(
         vm, backup_ops.latest_backup_messages(db, [vm.vm_name]).get(vm.vm_name), db.query(Config).first(),
     ))
+
+
+# --- Backup policies -------------------------------------------------------
+# A VM is protected when it has a policy; the policy owns its schedule and
+# retention (services/policy_ops.py).
+
+@router.get("/policies", response_model=List[PolicyResponse])
+def list_policies(db: Session = Depends(get_db), user: User = Depends(get_api_user)):
+    from services import policy_ops
+    return [PolicyResponse(**p) for p in policy_ops.list_policies(db)]
+
+
+@router.post("/policies", response_model=PolicyResponse, status_code=201)
+def create_policy(
+    body: PolicyCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_api_role("admin", "operator")),
+):
+    from services import policy_ops
+    try:
+        return PolicyResponse(**policy_ops.create_policy(db, body.model_dump()))
+    except policy_ops.PolicyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.patch("/policies/{policy_id}", response_model=PolicyResponse)
+def update_policy(
+    policy_id: int,
+    body: PolicyUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_api_role("admin", "operator")),
+):
+    from services import policy_ops
+    try:
+        return PolicyResponse(**policy_ops.update_policy(db, policy_id, body.model_dump(exclude_none=True)))
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except policy_ops.PolicyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/policies/{policy_id}")
+def delete_policy(
+    policy_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_api_role("admin", "operator")),
+):
+    from services import policy_ops
+    try:
+        policy_ops.delete_policy(db, policy_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except policy_ops.PolicyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True}
+
+
+@router.post("/policies/assign")
+def assign_policy(
+    body: PolicyAssign,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_api_role("admin", "operator")),
+):
+    from services import policy_ops
+    try:
+        ids = policy_ops.assign(db, body.vm_ids, body.policy_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"ok": True, "vm_ids": ids}
 
 
 @router.post("/inventory/apply")
@@ -606,6 +677,18 @@ def system_logs(
 @router.get("/jobs/progress")
 def jobs_progress(db: Session = Depends(get_db), user: User = Depends(get_api_user)):
     return backup_ops.job_progress(db)
+
+
+@router.get("/status")
+def get_status(db: Session = Depends(get_db), user: User = Depends(get_api_user)):
+    """Backup page strip and banner: last 24 h, next run, storage, problems."""
+    from services import status_ops
+    from services.vddk_install import is_vddk_installed
+    return status_ops.get_status(
+        db,
+        scheduler_paused=backup_ops.is_scheduler_paused(db),
+        vddk_installed=is_vddk_installed(),
+    )
 
 
 @router.get("/overview", response_model=OverviewResponse)

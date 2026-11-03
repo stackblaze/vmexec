@@ -97,16 +97,3 @@ def classify_gfs_keepers(points, daily=7, weekly=4, monthly=6, now=None):
     return kept
 
 
-def apply_gfs_to_chain_points(chain, daily=7, weekly=4, monthly=6):
-    """Return list of point entries to remove from a CBT chain."""
-    if not chain or not chain.get("points"):
-        return []
-    keep = classify_gfs_keepers(chain["points"], daily=daily, weekly=weekly, monthly=monthly)
-    return [p for p in chain["points"] if p["id"] not in keep]
-
-
-def apply_gfs_to_legacy_folders(date_folders, daily=7, weekly=4, monthly=6):
-    """Return folder names to delete from legacy date-folder backups."""
-    points = [{"id": d, "timestamp": d} for d in date_folders]
-    keep = classify_gfs_keepers(points, daily=daily, weekly=weekly, monthly=monthly)
-    return [d for d in date_folders if d not in keep]

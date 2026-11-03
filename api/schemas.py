@@ -65,49 +65,6 @@ class ApiKeyInfo(BaseModel):
     last_used_at: Optional[str] = None
 
 
-class StorageConfigUpdate(BaseModel):
-    storage_type: Optional[str] = None
-    nfs_path: Optional[str] = None
-    smb_unc_path: Optional[str] = None
-    smb_user: Optional[str] = None
-    smb_password: Optional[str] = None
-    s3_endpoint: Optional[str] = None
-    s3_access_key: Optional[str] = None
-    s3_secret_key: Optional[str] = None
-    s3_bucket: Optional[str] = None
-    s3_region: Optional[str] = None
-    perf_parallel_threads: Optional[int] = None
-    perf_compression_level: Optional[int] = None
-    backup_timeout_mins: Optional[int] = None
-    max_global_backups: Optional[int] = None
-    max_backups_per_host: Optional[int] = None
-    max_schedules_per_hour: Optional[int] = None
-    datastore_min_free_pct: Optional[int] = None
-    datastore_headroom_gb: Optional[int] = None
-    datastore_est_multiplier: Optional[float] = None
-    backup_transport: Optional[str] = None
-    repo_min_free_gb: Optional[int] = None
-    exclude_infra_vms: Optional[bool] = None
-    vddk_libdir: Optional[str] = None
-    cbt_enabled: Optional[bool] = None
-    cbt_full_interval: Optional[int] = None
-    retention_mode: Optional[str] = None
-    gfs_daily_keep: Optional[int] = None
-    gfs_weekly_keep: Optional[int] = None
-    gfs_monthly_keep: Optional[int] = None
-    secondary_copy_enabled: Optional[bool] = None
-    secondary_storage_type: Optional[str] = None
-    secondary_nfs_path: Optional[str] = None
-    secondary_smb_unc_path: Optional[str] = None
-    secondary_smb_user: Optional[str] = None
-    secondary_smb_password: Optional[str] = None
-    secondary_s3_endpoint: Optional[str] = None
-    secondary_s3_access_key: Optional[str] = None
-    secondary_s3_secret_key: Optional[str] = None
-    secondary_s3_bucket: Optional[str] = None
-    secondary_s3_region: Optional[str] = None
-
-
 class ConfigResponse(BaseModel):
     storage_type: str
     nfs_path: str
@@ -153,6 +110,11 @@ class ConfigResponse(BaseModel):
     imap_port: int
     imap_user: str
     imap_use_ssl: bool
+    alert_webhook_set: bool = False
+    alert_webhook_hint: str = ""
+    alert_on_failure: bool = True
+    alert_on_missed: bool = True
+    alert_on_storage: bool = True
 
 
 class ConfigUpdate(BaseModel):
@@ -193,6 +155,14 @@ class ConfigUpdate(BaseModel):
     imap_user: Optional[str] = None
     imap_password: Optional[str] = None
     imap_use_ssl: Optional[bool] = None
+    alert_webhook_url: Optional[str] = None  # "" clears it
+    alert_on_failure: Optional[bool] = None
+    alert_on_missed: Optional[bool] = None
+    alert_on_storage: Optional[bool] = None
+
+
+class AlertTestRequest(BaseModel):
+    url: Optional[str] = None  # None = the saved webhook
 
 
 class TestResult(BaseModel):
@@ -273,6 +243,50 @@ class VmResponse(BaseModel):
     host_name: str = ""
     last_secondary_copy_status: str = "none"
     last_backup_message: Optional[str] = None
+    policy_id: Optional[int] = None
+    policy_name: Optional[str] = None
+    restore_points: Optional[int] = None  # None = unknown (no chain / not local storage)
+
+
+class PolicyResponse(BaseModel):
+    id: int
+    name: str
+    frequency: str
+    days: str
+    hour: int
+    minute: int
+    keep_daily: int
+    keep_weekly: int
+    keep_monthly: int
+    vm_count: int
+    summary: str
+
+
+class PolicyCreate(BaseModel):
+    name: str
+    frequency: str = "daily"
+    days: str = "0,1,2,3,4,5,6"
+    hour: int = 2
+    minute: int = 0
+    keep_daily: int = 7
+    keep_weekly: int = 4
+    keep_monthly: int = 6
+
+
+class PolicyUpdate(BaseModel):
+    name: Optional[str] = None
+    frequency: Optional[str] = None
+    days: Optional[str] = None
+    hour: Optional[int] = None
+    minute: Optional[int] = None
+    keep_daily: Optional[int] = None
+    keep_weekly: Optional[int] = None
+    keep_monthly: Optional[int] = None
+
+
+class PolicyAssign(BaseModel):
+    vm_ids: List[int]
+    policy_id: Optional[int] = None  # None = stop protecting these VMs
 
 
 class SyncResult(BaseModel):

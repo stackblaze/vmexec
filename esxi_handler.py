@@ -149,10 +149,20 @@ def get_all_vms(si):
             "uuid": child.summary.config.uuid,
             "cpu_count": child.summary.config.numCpu if child.summary.config else 0,
             "memory_mb": child.summary.config.memorySizeMB if child.summary.config else 0,
-            "storage_gb": round(child.summary.storage.committed / (1024**3), 2) if child.summary.storage else 0.0
+            "storage_gb": round(child.summary.storage.committed / (1024**3), 2) if child.summary.storage else 0.0,
+            # The ESXi host the VM runs on: the per-host backup limit counts
+            # these, not the (single) vCenter registration.
+            "runtime_host": _runtime_host_name(child),
         })
     
     return vm_list
+
+def _runtime_host_name(vm):
+    try:
+        h = vm.summary.runtime.host
+        return h.name if h is not None else ""
+    except Exception:  # noqa: BLE001 - informational only
+        return ""
 
 def get_datastores(si):
     """
@@ -287,54 +297,6 @@ def wait_for_vm_idle(si, vm_name, timeout_mins=15):
     
     print(f"[WARN] {final_msg}")
     return False, final_msg
-
-def disconnect_removable_devices(si, vm_name):
-    """ Disconnects any ISO images from CD-ROM drives and Floppy drives before backup. """
-    content = si.RetrieveContent()
-    vm = _find_vm(si, vm_name)
-    
-    if not vm:
-        print(f"disconnect_removable_devices: VM {vm_name} not found.")
-        return False
-        
-    devices_to_change = []
-    for device in vm.config.hardware.device:
-        if isinstance(device, (vim.VirtualCdrom, vim.VirtualFloppy)):
-            # Check if it has a backing that points to a file (ISO/FLP)
-            has_file_backing = False
-            if hasattr(device.backing, 'fileName') and device.backing.fileName:
-                has_file_backing = True
-                
-            if has_file_backing:
-                print(f"Disconnecting removable media {device.backing.fileName} from {vm_name}...")
-                
-                if isinstance(device, vim.VirtualCdrom):
-                    new_backing = vim.VirtualCdromAtapiBackingInfo(deviceName="")
-                else:
-                    new_backing = vim.VirtualFloppyDeviceBackingInfo(deviceName="")
-                
-                device.backing = new_backing
-                device.connectable.connected = False
-                device.connectable.startConnected = False
-                
-                spec = vim.VirtualDeviceConfigSpec()
-                spec.device = device
-                spec.operation = vim.VirtualDeviceConfigSpec.Operation.edit
-                devices_to_change.append(spec)
-                
-    if not devices_to_change:
-        return True
-        
-    config_spec = vim.vm.ConfigSpec()
-    config_spec.deviceChange = devices_to_change
-    
-    task = vm.ReconfigVM_Task(spec=config_spec)
-    
-    import time
-    while task.info.state not in [vim.TaskInfo.State.success, vim.TaskInfo.State.error]:
-        time.sleep(2)
-        
-    return task.info.state == vim.TaskInfo.State.success
 
 def check_consolidation_needed(si, vm_name):
     """ Returns True if the VM requires disk consolidation. """

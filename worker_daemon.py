@@ -5,7 +5,7 @@ import hashlib
 import threading
 from models import SessionLocal, VM, Config, ESXiHost, init_db
 import worker
-from logger_util import log_info, log_error, log_critical
+from logger_util import log_info, log_warn, log_error, log_critical
 from config_env import DATA_DIR
 
 SNAPSHOT_SWEEP_INTERVAL_SECS = 300
@@ -43,11 +43,42 @@ def get_schedule_hash():
         vms = db.query(VM).filter(VM.is_selected == True).all()
         # Create a string representation of the schedule state
         state_str = f"paused:{int(paused)}|" + "".join(
-            [f"{v.id}:{v.schedule_hour}:{v.schedule_minute}:{v.is_job_active}" for v in vms]
+            [f"{v.id}:{v.schedule_hour}:{v.schedule_minute}:{v.is_job_active}:{v.schedule_frequency}:{v.schedule_days}" for v in vms]
         )
         return hashlib.md5(state_str.encode()).hexdigest()
     finally:
         db.close()
+
+def _sweep_repository(db):
+    """Leftovers of backups/restores that could not clean up (repo_sweep.py)."""
+    try:
+        import repo_sweep
+        import storage_util
+        config = db.query(Config).first()
+        if not config or config.storage_type != "NFS":
+            return
+        running = {v.vm_name for v in db.query(VM).all()
+                   if v.id in worker.get_active_backup_vm_ids() or (v.current_action or "").strip()}
+        repo_sweep.maybe_sweep(storage_util.get_storage(config), running)
+    except Exception as e:  # noqa: BLE001
+        log_warn(f"[SWEEP] check failed: {e}")
+
+
+def _check_alerts(db):
+    """Missed schedules and storage health -> webhook (services/alert_ops.py)."""
+    try:
+        from services import alert_ops, status_ops
+        config = db.query(Config).first()
+        if not config:
+            return
+        paused = bool(getattr(config, "scheduler_paused", False))
+        alert_ops.check_missed(db, config, db.query(VM).all(), paused=paused)
+        if config.storage_type == "NFS":
+            path = config.nfs_path or "/mnt/backups"
+            alert_ops.check_storage(config, lambda: status_ops.storage_health(path))
+    except Exception as e:  # noqa: BLE001 - alerts must never stop the daemon
+        log_warn(f"[ALERT] check failed: {e}")
+
 
 def run_daemon():
     init_db()
@@ -156,6 +187,8 @@ def run_daemon():
                 wdb = SessionLocal()
                 try:
                     worker.clear_orphaned_actions(wdb)
+                    _check_alerts(wdb)
+                    _sweep_repository(wdb)
                 finally:
                     wdb.close()
 

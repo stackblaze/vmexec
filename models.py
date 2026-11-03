@@ -119,6 +119,11 @@ class Config(Base):
     secondary_s3_secret_key = Column(EncryptedString, default="")
     secondary_s3_bucket = Column(String, default="")
     secondary_s3_region = Column(String, default="us-east-1")
+    # Alerts (services/alert_ops.py): one webhook, three switches
+    alert_webhook_url = Column(EncryptedString, default="")
+    alert_on_failure = Column(Boolean, default=True)
+    alert_on_missed = Column(Boolean, default=True)
+    alert_on_storage = Column(Boolean, default=True)
 
 class VM(Base):
     """List of VMs fetched from ESXi and marked for backup"""
@@ -155,6 +160,30 @@ class VM(Base):
     speed_mbps = Column(Float, default=0.0)  # Last known transfer speed
     power_off_for_backup = Column(Boolean, default=False)  # Shutdown VM before backup for faster direct-stream path
     cbt_enabled = Column(Boolean, default=True)  # Per-VM CBT; None would inherit config — use True default
+    runtime_host = Column(String, default="")  # ESXi host it runs on (per-host backup limit)
+    policy_id = Column(Integer, ForeignKey("policies.id"), nullable=True)  # None = not protected
+    policy = relationship("BackupPolicy", back_populates="vms")
+
+class BackupPolicy(Base):
+    """When a VM is backed up and how long its restore points are kept.
+
+    Assigning a VM to a policy writes the VM's schedule fields (policy time
+    plus a stagger offset, services/policy_ops.restagger), so the scheduler
+    keeps reading per-VM times. Retention reads keep_* from here.
+    """
+    __tablename__ = "policies"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True)
+    frequency = Column(String, default="daily")   # daily | weekly
+    days = Column(String, default="0,1,2,3,4,5,6")  # weekly: APScheduler day_of_week, 0=Mon ... 6=Sun
+    hour = Column(Integer, default=2)
+    minute = Column(Integer, default=0)
+    keep_daily = Column(Integer, default=7)
+    keep_weekly = Column(Integer, default=4)
+    keep_monthly = Column(Integer, default=6)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    vms = relationship("VM", back_populates="policy")
+
 
 class BackupLog(Base):
     __tablename__ = "backup_logs"
@@ -257,6 +286,12 @@ def init_db():
             ("secondary_s3_region", "ALTER TABLE config ADD COLUMN secondary_s3_region VARCHAR DEFAULT 'us-east-1'"),
             ("last_secondary_copy_status", "ALTER TABLE vms ADD COLUMN last_secondary_copy_status VARCHAR DEFAULT 'none'"),
             ("last_backup_duration", "ALTER TABLE vms ADD COLUMN last_backup_duration INTEGER DEFAULT 0"),
+            ("policy_id", "ALTER TABLE vms ADD COLUMN policy_id INTEGER REFERENCES policies(id)"),
+            ("runtime_host", "ALTER TABLE vms ADD COLUMN runtime_host VARCHAR DEFAULT ''"),
+            ("alert_webhook_url", "ALTER TABLE config ADD COLUMN alert_webhook_url VARCHAR DEFAULT ''"),
+            ("alert_on_failure", "ALTER TABLE config ADD COLUMN alert_on_failure BOOLEAN DEFAULT 1"),
+            ("alert_on_missed", "ALTER TABLE config ADD COLUMN alert_on_missed BOOLEAN DEFAULT 1"),
+            ("alert_on_storage", "ALTER TABLE config ADD COLUMN alert_on_storage BOOLEAN DEFAULT 1"),
         ]
         
         from logger_util import log_info, log_warn
@@ -284,6 +319,22 @@ def init_db():
         db.add(default_config)
         db.commit()
     db.close()
+
+    # 5. "Power off for backup" was removed: clear any flag left from before.
+    db = SessionLocal()
+    try:
+        db.query(VM).filter(VM.power_off_for_backup == True).update({"power_off_for_backup": False})  # noqa: E712
+        db.commit()
+    finally:
+        db.close()
+
+    # 6. Default backup policies (Daily, Weekly); selected VMs join Daily.
+    from services.policy_ops import ensure_default_policies
+    db = SessionLocal()
+    try:
+        ensure_default_policies(db)
+    finally:
+        db.close()
 
 if __name__ == "__main__":
     init_db()

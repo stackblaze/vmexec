@@ -66,8 +66,6 @@ export const hostsApi = {
 export const configApi = {
   get: () => api('/config'),
   update: (body) => api('/config', { method: 'PUT', body: JSON.stringify(body) }),
-  updateStorage: (body) => api('/config/storage', { method: 'PUT', body: JSON.stringify(body) }),
-  testStorage: () => api('/config/storage/test', { method: 'POST' }),
   testEmail: () => api('/config/email/test', { method: 'POST' }),
 }
 
@@ -80,8 +78,21 @@ export const restoreApi = {
   chain: (name) => api(`/backups/chain/${encodeURIComponent(name)}`),
 }
 
-export const overviewApi = {
-  get: () => api('/overview'),
+export const statusApi = {
+  get: () => api('/status'),
+}
+
+export const policiesApi = {
+  list: () => api('/policies'),
+  create: (body) => api('/policies', { method: 'POST', body: JSON.stringify(body) }),
+  update: (id, body) => api(`/policies/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  remove: (id) => api(`/policies/${id}`, { method: 'DELETE' }),
+  // policy_id null = stop protecting these VMs
+  assign: (vmIds, policyId) => api('/policies/assign', { method: 'POST', body: JSON.stringify({ vm_ids: vmIds, policy_id: policyId }) }),
+}
+
+export const alertsApi = {
+  test: (url) => api('/config/alerts/test', { method: 'POST', body: JSON.stringify({ url: url || null }) }),
 }
 
 export const usersApi = {

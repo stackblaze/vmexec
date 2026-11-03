@@ -83,16 +83,14 @@ class TestShutdownRefuses(unittest.TestCase):
         vm.PowerOffVM_Task.assert_not_called()
 
 
-class TestApiRefuses(unittest.TestCase):
-    def test_update_vm_job_rejects_power_off_for_vcenter(self):
+class TestPowerOffRemoved(unittest.TestCase):
+    def test_api_ignores_power_off_flag(self):
         from services import backup_ops
-        vm = SimpleNamespace(vm_name="VMware vCenter Server", power_off_for_backup=False)
+        vm = SimpleNamespace(vm_name="vyos-01", power_off_for_backup=False, schedule_frequency="daily")
         db = MagicMock()
         db.query.return_value.filter.return_value.first.return_value = vm
-        with self.assertRaises(backup_ops.PowerOffNotAllowed):
-            backup_ops.update_vm_job(db, 1, {"power_off_for_backup": True})
+        backup_ops.update_vm_job(db, 1, {"power_off_for_backup": True})
         self.assertFalse(vm.power_off_for_backup)
-        db.commit.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -11,10 +11,12 @@ import os
 import shutil
 import socket
 import ssl
+import struct
 import subprocess
 import sys
 import tempfile
 import time
+import uuid
 
 from logger_util import log_info, log_warn, log_error
 import vsphere_context
@@ -292,6 +294,143 @@ def _resolve_local_dest(storage, dest_rel_path):
     return None, f"Cannot resolve local path for storage base: {base}"
 
 
+def stream_snapshot_areas(
+    si,
+    vm,
+    snap_obj,
+    disk,
+    areas,
+    server_host,
+    host_user,
+    host_password,
+    storage,
+    dest_rel_path,
+    config=None,
+    connection_type=vsphere_context.CONN_AUTO,
+    is_cancelled_func=None,
+    progress_callback=None,
+    progress_base=0,
+    progress_total=100,
+    speed_callback=None,
+):
+    """Full backup of one disk, reading only the areas in use.
+
+    areas: (start, length) from QueryChangedDiskAreas(changeId="*"). The
+    destination is a sparse file of the disk's capacity: unused space stays
+    a hole, so nothing is read, sent or stored for it (a full used to read
+    every provisioned byte: vCenter, 586 GB of disks holding 73 GB, took
+    39 minutes). Data streams from the reader to the file, never held in
+    memory. Returns bytes written.
+    """
+    import json
+
+    if not is_available(config):
+        raise VddkNotAvailableError(availability_message(config))
+    ensure_vddk_runtime_dirs()
+    dest_path, err = _resolve_local_dest(storage, dest_rel_path)
+    if err:
+        raise VddkNotAvailableError(err)
+    capacity = int(disk["capacity_bytes"])
+    filtered = sorted((int(s), int(l)) for s, l in areas if int(l) > 0)
+    total = sum(l for _, l in filtered) or 1
+    conn_type = vsphere_context.resolve_connection_type(si, connection_type)
+    candidates = vsphere_context.vddk_disk_open_candidates(disk, conn_type)
+    os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
+
+    last_err = None
+    for disk_ds_path in candidates:
+        pw_path = script_path = areas_path = sock = err_path = None
+        proc = reader = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", delete=False, prefix="vddk_pw_") as pw_file:
+                pw_file.write(host_password)
+                pw_path = pw_file.name
+            cmd, _ = vsphere_context.build_nbdkit_vddk_cmd(
+                si=si, vm=vm, snap_obj=snap_obj, disk_ds_path=disk_ds_path,
+                server_host=server_host, user=host_user, password_file=pw_path,
+                thumbprint=get_server_thumbprint(server_host), libdir=get_vddk_libdir(config),
+                stored_type=connection_type,
+            )
+            sock = os.path.join(tempfile.gettempdir(), f"nbdkit_full_{os.getpid()}_{uuid.uuid4().hex[:12]}.sock")
+            # -f: stay in the foreground so stopping this process stops the server.
+            run_cmd = [cmd[0], "-f"] + cmd[1:-1] + ["-U", sock, cmd[-1]]
+            log_info(f"[NBD] Full backup of used areas only: disk={disk_ds_path} areas={len(filtered)} "
+                     f"bytes={total} of {capacity}")
+            err_fd, err_path = tempfile.mkstemp(prefix="nbdkit_err_")
+            proc = subprocess.Popen(run_cmd, stdout=subprocess.DEVNULL, stderr=err_fd)
+            os.close(err_fd)
+            _wait_for_unix_socket(sock, proc, err_path)
+            with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".py") as sf:
+                sf.write(_EXTENT_READER_SRC)
+                script_path = sf.name
+            with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as af:
+                json.dump(filtered, af)
+                areas_path = af.name
+
+            reader = subprocess.Popen([_python313(), script_path, sock, areas_path],
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            written = 0
+            t0 = last_t = time.time()
+            last_b = 0
+            with open(dest_path, "wb") as out:
+                out.truncate(capacity)  # sparse: unused areas stay holes
+                src = reader.stdout
+                while True:
+                    if is_cancelled_func and is_cancelled_func():
+                        raise RuntimeError("Backup cancelled by user")
+                    hdr = src.read(16)
+                    if not hdr:
+                        break
+                    if len(hdr) < 16:
+                        raise RuntimeError("truncated frame header from extent reader")
+                    off, length = struct.unpack(">QQ", hdr)
+                    data = src.read(length)
+                    if len(data) != length:
+                        raise RuntimeError("truncated frame data from extent reader")
+                    out.seek(off)
+                    out.write(data)
+                    written += length
+                    now = time.time()
+                    if progress_callback:
+                        progress_callback(progress_base + int(progress_total * written / total))
+                    if speed_callback and now - last_t >= 2:
+                        speed_callback(round((written - last_b) / (now - last_t) / 1e6, 1))
+                        last_t, last_b = now, written
+                out.flush()
+                os.fsync(out.fileno())
+            rerr = reader.stderr.read()
+            reader.wait(timeout=60)
+            if reader.returncode != 0:
+                raise RuntimeError((rerr or b"").decode("utf-8", errors="replace")[-800:]
+                                   or f"extent reader exit {reader.returncode}")
+            if written != sum(l for _, l in filtered):
+                raise RuntimeError(f"byte mismatch: expected {sum(l for _, l in filtered)}, wrote {written}")
+            secs = max(time.time() - t0, 0.001)
+            log_info(f"[NBD] Full (used areas): {written / 1e9:.2f} GB in {secs:.0f} s "
+                     f"({written / secs / 1e6:.0f} MB/s), {capacity / 1e9:.1f} GB disk")
+            return written
+        except Exception as e:
+            last_err = e
+            if is_cancelled_func and is_cancelled_func():
+                raise
+            log_warn(f"[NBD] Used-areas full backup failed for {disk_ds_path}: {str(e)[:300]}")
+        finally:
+            for p_ in (reader, proc):
+                if p_ and p_.poll() is None:
+                    p_.kill()
+                    try:
+                        p_.wait(timeout=10)
+                    except Exception:
+                        pass
+            for path in (pw_path, script_path, areas_path, sock, err_path):
+                if path:
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        pass
+    raise RuntimeError(last_err or "used-areas full backup failed for all disk candidates")
+
+
 def stream_snapshot_disk(
     si,
     vm,
@@ -380,153 +519,6 @@ def stream_snapshot_disk(
             os.unlink(pw_path)
         except OSError:
             pass
-
-
-def export_live_nbd(
-    si,
-    vm_name,
-    storage,
-    dest_rel_dir,
-    disk_descriptors,
-    vmx_ds_name,
-    vmx_rel_path,
-    server_host,
-    host_user,
-    host_password,
-    config=None,
-    connection_type=vsphere_context.CONN_AUTO,
-    progress_callback=None,
-    speed_callback=None,
-    action_callback=None,
-    is_cancelled_func=None,
-    create_snapshot_func=None,
-    remove_snapshot_func=None,
-    download_vmx_func=None,
-):
-    """
-    Live VM backup via VDDK/NBD (no CopyVirtualDisk temp on ESXi).
-    server_host is the registered endpoint (ESXi or vCenter FQDN/IP).
-    """
-    if not is_available(config):
-        return False, f"NBD transport unavailable: {availability_message(config)}"
-
-    from backup_engine import _find_snapshot_by_name, _collect_vm_disk_layout
-
-    vm = vsphere_context.find_vm_by_name(si, vm_name)
-    if not vm:
-        return False, f"VM {vm_name} not found"
-
-    snap_obj = None
-    snap_name = None
-    files_downloaded = []
-
-    try:
-        if action_callback:
-            action_callback("Creating backup snapshot…")
-        snap_obj, snap_name = create_snapshot_func(si, vm_name)
-        if not snap_obj:
-            return False, f"Snapshot creation failed: {snap_name}"
-        if snap_name and not getattr(snap_obj, "_moId", None):
-            vm_refreshed = vsphere_context.find_vm_by_name(si, vm_name)
-            resolved = _find_snapshot_by_name(vm_refreshed, snap_name)
-            if resolved:
-                snap_obj = resolved
-            else:
-                return False, f"Cannot resolve snapshot moRef for {snap_name}"
-
-        log_info(f"[NBD] Waiting {SNAPSHOT_SETTLE_SECS}s for snapshot to settle...")
-        if action_callback:
-            action_callback(f"Waiting {SNAPSHOT_SETTLE_SECS}s for snapshot to settle…")
-        time.sleep(SNAPSHOT_SETTLE_SECS)
-
-        vm = vsphere_context.find_vm_by_name(si, vm_name)
-        _, disk_descriptors, _, _ = _collect_vm_disk_layout(vm)
-        if not disk_descriptors:
-            return False, f"No disks found for {vm_name} after snapshot"
-
-        storage.makedirs(dest_rel_dir)
-        total_disks = len(disk_descriptors)
-
-        for idx, disk in enumerate(disk_descriptors):
-            if is_cancelled_func and is_cancelled_func():
-                return False, "Backup cancelled by user"
-
-            disk_basename = os.path.basename(disk["rel_path"])
-            flat_basename = disk_basename.replace(".vmdk", "-flat.vmdk")
-            flat_rel = f"{dest_rel_dir}/{flat_basename}"
-            desc_rel = f"{dest_rel_dir}/{disk_basename}"
-
-            step_base = 5 + (85 * idx // max(total_disks, 1))
-            step_end = 5 + (85 * (idx + 1) // max(total_disks, 1))
-
-            log_info(f"[NBD] Disk {idx + 1}/{total_disks}: {disk_basename}")
-
-            if download_vmx_func:
-                download_vmx_func(
-                    si, disk["ds_name"], disk["rel_path"], storage, desc_rel,
-                    progress_callback=progress_callback,
-                    progress_base=step_base,
-                    progress_total=2,
-                    speed_callback=speed_callback,
-                    is_cancelled_func=is_cancelled_func,
-                    vm=vm,
-                )
-            files_downloaded.append(disk_basename)
-
-            stream_snapshot_disk(
-                si, vm, snap_obj, disk,
-                server_host, host_user, host_password,
-                storage, flat_rel, config=config,
-                connection_type=connection_type,
-                is_cancelled_func=is_cancelled_func,
-                progress_callback=progress_callback,
-                progress_base=step_base + 2,
-                progress_total=max(step_end - step_base - 2, 1),
-                speed_callback=speed_callback,
-                action_callback=action_callback,
-            )
-            files_downloaded.append(flat_basename)
-
-        if progress_callback:
-            progress_callback(93)
-        if remove_snapshot_func and snap_name:
-            remove_snapshot_func(si, vm_name, snap_name, timeout_mins=60)
-            snap_name = None
-
-        if progress_callback:
-            progress_callback(96)
-        if vmx_ds_name and vmx_rel_path and download_vmx_func:
-            vmx_filename = os.path.basename(vmx_rel_path)
-            try:
-                download_vmx_func(
-                    si, vmx_ds_name, vmx_rel_path, storage, f"{dest_rel_dir}/{vmx_filename}",
-                    is_cancelled_func=is_cancelled_func,
-                    vm=vm,
-                )
-                files_downloaded.append(vmx_filename)
-            except Exception as e:
-                log_warn(f"[NBD] VMX download warning: {e}")
-
-        if progress_callback:
-            progress_callback(100)
-        conn = vsphere_context.resolve_connection_type(si, connection_type)
-        return True, (
-            f"Backup completed [nbd/{conn}]: {len(files_downloaded)} file(s) saved to storage"
-        )
-
-    except VddkNotAvailableError as e:
-        return False, str(e)
-    except Exception as e:
-        if is_cancelled_func and is_cancelled_func():
-            return False, "Backup cancelled by user"
-        log_error(f"[NBD] Live backup failed: {e}")
-        return False, str(e)
-    finally:
-        if snap_name and remove_snapshot_func:
-            try:
-                remove_snapshot_func(si, vm_name, snap_name, timeout_mins=30)
-            except Exception as ce:
-                log_error(f"[NBD] Snapshot cleanup error: {ce}")
 
 
 def _python313():
@@ -629,7 +621,7 @@ def read_snapshot_extents(
             # Serve on a UNIX socket instead of --run; disk path is the last arg.
             sock = os.path.join(
                 tempfile.gettempdir(),
-                f"nbdkit_ext_{os.getpid()}_{int(time.time() * 1000)}.sock",
+                f"nbdkit_ext_{os.getpid()}_{uuid.uuid4().hex[:12]}.sock",  # unique per thread
             )
             run_cmd = cmd[:-1] + ["-U", sock, cmd[-1]]
             log_info(
@@ -694,23 +686,3 @@ def read_snapshot_extents(
     raise RuntimeError(last_err or "VDDK extent read failed for all disk candidates")
 
 
-def read_snapshot_extent(
-    si,
-    vm,
-    snap_obj,
-    disk,
-    offset,
-    length,
-    server_host,
-    host_user,
-    host_password,
-    config=None,
-    connection_type=vsphere_context.CONN_AUTO,
-):
-    """Read a byte range from a snapshot-backed disk via NBD/VDDK."""
-    areas = read_snapshot_extents(
-        si, vm, snap_obj, disk, [(offset, length)],
-        server_host, host_user, host_password, config, connection_type,
-    )
-    # A read >32 MiB is returned as multiple ordered chunks; concatenate them.
-    return b"".join(d for _, d in areas)

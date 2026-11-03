@@ -76,7 +76,7 @@ async function onLogin() {
       router.push('/mfa-setup')
       return
     }
-    router.push(route.query.redirect || '/overview')
+    router.push(route.query.redirect || '/backup')
   } catch (e) {
     error.value = e.message
   }
@@ -86,7 +86,7 @@ async function onMfa() {
   error.value = ''
   try {
     await auth.submitMfa(mfaCode.value)
-    router.push(route.query.redirect || '/overview')
+    router.push(route.query.redirect || '/backup')
   } catch (e) {
     error.value = e.message
   }
