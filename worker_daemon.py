@@ -155,6 +155,11 @@ def run_daemon():
             db = SessionLocal()
             pending_runs = db.query(VM).filter(VM.current_action == "PENDING_RUN").all()
             for vm in pending_runs:
+                # Started less than a minute ago: leave it PENDING_RUN and take
+                # it on a later poll. Marking it Queued and calling
+                # queue_backup now dropped it (cooldown), stuck at "Queued...".
+                if worker.trigger_cooldown_left(vm.id) > 0:
+                    continue
                 log_info(f"[PID {pid}] Found manual trigger request for VM: {vm.vm_name}")
                 vm.current_action = "Queued..."
                 db.commit()

@@ -256,22 +256,35 @@ def get_active_backup_vm_ids():
         return set(_active_backup_vm_ids)
 
 
+TRIGGER_COOLDOWN_SECS = 65  # one schedule tick must not start the same VM twice
+
+
+def trigger_cooldown_left(vm_id: int) -> int:
+    """Seconds until queue_backup accepts this VM again (0 = now)."""
+    last = last_trigger_times.get(vm_id)
+    if last is None:
+        return 0
+    left = TRIGGER_COOLDOWN_SECS - (datetime.datetime.now().timestamp() - last)
+    return max(0, int(left + 0.999))
+
+
 def queue_backup(vm_id: int):
     """Queue a backup if concurrency slots are available; otherwise wait."""
     now = datetime.datetime.now().timestamp()
     pid = os.getpid()
 
-    if vm_id in last_trigger_times:
-        diff = now - last_trigger_times[vm_id]
-        if diff < 65:
-            log_debug(f"[PID {pid}] Skipping queue for VM {vm_id}: Cooldown active ({int(diff)}s < 65s)")
-            return
+    if trigger_cooldown_left(vm_id) > 0:
+        log_debug(f"[PID {pid}] Skipping queue for VM {vm_id}: cooldown ({trigger_cooldown_left(vm_id)}s left)")
+        return
 
     db = SessionLocal()
     vm = db.query(VM).filter(VM.id == vm_id).first()
     config = db.query(Config).first()
     if config and getattr(config, "scheduler_paused", False):
         log_info(f"[PID {pid}] Scheduler paused — skipping backup queue for VM ID {vm_id}")
+        if vm is not None and vm.current_action == "Queued...":
+            vm.current_action = ""  # a manual run marked Queued must not stay Queued
+            db.commit()
         db.close()
         return
     if not vm or not vm.esxi_host:
