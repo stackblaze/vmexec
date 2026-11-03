@@ -47,6 +47,14 @@ def materialize_chain_point(storage, point_rel_dir):
             "type": manifest["type"],
             "parent": manifest.get("parent_id"),
         }]
+    # A restore must start from a full. If a parent was pruned, walking the
+    # chain stops early and the disk would be built from zeros plus deltas:
+    # a corrupt disk with no error. Refuse instead.
+    if point_path[0].get("type") not in ("full", "synthetic_full"):
+        raise RuntimeError(
+            f"Restore point {point_id} of {vm_name} is unusable: its chain does not "
+            f"start at a full backup (missing parent {point_path[0].get('parent')})."
+        )
 
     out_rel = f"{point_rel_dir.rstrip('/')}/_materialized"
     storage.makedirs(out_rel)
@@ -208,10 +216,19 @@ def create_synthetic_full(storage, vm_name, chain):
     mat_rel = materialize_chain_point(storage, latest_rel)
     new_id = new_point_id()
     new_rel = point_rel(vm_name, new_id)
-    storage.makedirs(new_rel)
 
-    for fn in storage.list_files(mat_rel):
-        _copy_storage_file(storage, f"{mat_rel}/{fn}", f"{new_rel}/{fn}")
+    # Move the materialized folder into place when the storage is a local
+    # path (ZeroFS/NFS): a rename, not a second full copy of every disk.
+    mat_local = _resolve_local_path(storage, mat_rel)
+    new_local = _resolve_local_path(storage, new_rel)
+    if mat_local and new_local and not os.path.exists(new_local):
+        os.makedirs(os.path.dirname(new_local), exist_ok=True)
+        os.rename(mat_local, new_local)
+    else:
+        storage.makedirs(new_rel)
+        for fn in storage.list_files(mat_rel):
+            _copy_storage_file(storage, f"{mat_rel}/{fn}", f"{new_rel}/{fn}")
+        storage.delete_dir(mat_rel)
 
     new_disks = []
     for d in latest_manifest["disks"]:
@@ -234,31 +251,63 @@ def create_synthetic_full(storage, vm_name, chain):
     )
     save_manifest(storage, vm_name, new_id, manifest)
 
-    for pt in chain.get("points", []):
-        if pt["id"] != new_id:
-            old_rel = point_rel(vm_name, pt["id"])
-            if storage.exists(old_rel):
-                storage.delete_dir(old_rel)
-
-    new_chain = {
-        "version": chain.get("version", 1),
-        "vm_name": vm_name,
-        "chain_id": chain.get("chain_id"),
-        "points": [{
-            "id": new_id,
-            "type": "synthetic_full",
-            "parent": None,
-            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
-        }],
-        "latest": new_id,
-    }
+    # Older points stay: they are restore points the retention policy may
+    # still want (it used to delete them all here, so "keep 7" or a weekly
+    # / monthly point could never survive past the next synthetic full).
+    # Retention prunes them, never this function.
+    new_chain = dict(chain)
+    new_chain["points"] = list(chain.get("points", [])) + [{
+        "id": new_id,
+        "type": "synthetic_full",
+        "parent": None,
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+    }]
+    new_chain["latest"] = new_id
     save_chain(storage, vm_name, new_chain)
-    log_info(f"[CBT] Synthetic full created: {new_id} (from {latest_id})")
+    log_info(f"[CBT] Synthetic full created: {new_id} (from {latest_id}); older points kept for retention")
     return new_chain
 
 
-def apply_chain_retention(storage, vm_name, chain, retention_count, full_interval, config=None):
-    """Optionally rotate to synthetic full, then prune old chain points."""
+def with_ancestors(points, keep_ids):
+    """keep_ids plus every point they depend on (parent links back to a full)."""
+    by_id = {p["id"]: p for p in points}
+    closed = set()
+    for pid in keep_ids:
+        cur = by_id.get(pid)
+        while cur and cur["id"] not in closed:
+            closed.add(cur["id"])
+            parent = cur.get("parent")
+            cur = by_id.get(parent) if parent else None
+    return closed
+
+
+def select_points_to_remove(points, retention_count=7, gfs=None, now=None):
+    """Points retention may delete.
+
+    gfs = (daily, weekly, monthly) keeps one point per day/week/month;
+    otherwise the newest `retention_count` points are kept. Either way every
+    point a kept point depends on is kept too, so no restore is ever broken.
+    """
+    if not points:
+        return []
+    if gfs:
+        from gfs_retention import classify_gfs_keepers
+        daily, weekly, monthly = gfs
+        keep = classify_gfs_keepers(points, daily=daily, weekly=weekly, monthly=monthly, now=now)
+    else:
+        n = max(1, int(retention_count or 1))
+        keep = {p["id"] for p in points[-n:]}
+    keep.add(points[-1]["id"])  # the newest point always stays
+    keep = with_ancestors(points, keep)
+    return [p for p in points if p["id"] not in keep]
+
+
+def apply_chain_retention(storage, vm_name, chain, retention_count, full_interval, config=None, gfs=None):
+    """Optionally rotate to a synthetic full, then prune old chain points.
+
+    gfs (daily, weekly, monthly) comes from the VM's backup policy; without
+    it the config's retention_mode decides (gfs_* keeps, or retention_count).
+    """
     from backup_manifest import point_rel, save_chain
     from backup_manifest import count_incrementals_since_full
 
@@ -269,34 +318,28 @@ def apply_chain_retention(storage, vm_name, chain, retention_count, full_interva
         chain = create_synthetic_full(storage, vm_name, chain)
 
     points = chain.get("points", [])
-    retention_mode = getattr(config, "retention_mode", "count") if config else "count"
-
-    if retention_mode == "gfs":
-        from gfs_retention import classify_gfs_keepers
-        daily = getattr(config, "gfs_daily_keep", 7) or 7
-        weekly = getattr(config, "gfs_weekly_keep", 4) or 4
-        monthly = getattr(config, "gfs_monthly_keep", 6) or 6
-        keep = classify_gfs_keepers(points, daily=daily, weekly=weekly, monthly=monthly)
-        to_remove = [p for p in points if p["id"] not in keep]
-    else:
-        if retention_count < 1:
-            retention_count = 1
-        if len(points) <= retention_count:
-            return chain
-        to_remove = points[: len(points) - retention_count]
+    if gfs is None and config is not None and getattr(config, "retention_mode", "count") == "gfs":
+        gfs = (
+            getattr(config, "gfs_daily_keep", 7) or 7,
+            getattr(config, "gfs_weekly_keep", 4) or 0,
+            getattr(config, "gfs_monthly_keep", 6) or 0,
+        )
+    to_remove = select_points_to_remove(points, retention_count=retention_count, gfs=gfs)
 
     if not to_remove:
         return chain
+
+    # Index first, folders second: a crash in between leaves unreferenced
+    # folders (harmless), never an index pointing at a deleted point.
+    remove_ids = {p["id"] for p in to_remove}
+    chain["points"] = [p for p in points if p["id"] not in remove_ids]
+    if chain["points"]:
+        chain["latest"] = chain["points"][-1]["id"]
+    save_chain(storage, vm_name, chain)
 
     for pt in to_remove:
         rel = point_rel(vm_name, pt["id"])
         if storage.exists(rel):
             log_info(f"[CBT] Retention: removing point {pt['id']}")
             storage.delete_dir(rel)
-
-    remove_ids = {p["id"] for p in to_remove}
-    chain["points"] = [p for p in points if p["id"] not in remove_ids]
-    if chain["points"]:
-        chain["latest"] = chain["points"][-1]["id"]
-    save_chain(storage, vm_name, chain)
     return chain
