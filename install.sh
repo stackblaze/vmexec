@@ -220,12 +220,17 @@ echo
 # ------------------------------------------------------------------ summary
 bold "Summary"
 info "Backups:     s3://$BUCKET/$PREFIX  ($ENDPOINT, $REGION)"
-case "$MODE" in
-  new) info "Repository:  new (an encryption password is generated and saved for you)";;
-  recover) info "Repository:  recover the existing one ($OBJECTS objects)";;
-  move) info "Repository:  move from s3://$CUR_URL to a new, empty one";;
-esac
-[ "$SAME_AS_NOW" = 1 ] && info "Repository:  unchanged (this appliance already uses it)"
+HAVE_PASSWORD=0; grep -q '^ZEROFS_PASSWORD=.' /etc/zerofs/zerofs.env 2>/dev/null && HAVE_PASSWORD=1
+if [ "$SAME_AS_NOW" = 1 ]; then
+  info "Repository:  unchanged (this appliance already uses it)"
+else
+  case "$MODE" in
+    new) if [ "$HAVE_PASSWORD" = 1 ]; then info "Repository:  new, encrypted with this appliance's existing password"
+         else info "Repository:  new; an encryption password is generated and saved to /root/vmexec-zerofs-password.txt"; fi ;;
+    recover) info "Repository:  recover the existing one ($OBJECTS objects)" ;;
+    move) info "Repository:  move from s3://$CUR_URL to a new, empty one (same encryption password)" ;;
+  esac
+fi
 if [ -n "$CACHE_DEV" ]; then info "Cache disk:  $CACHE_DEV ($CACHE_SIZE_GB GB) WILL BE FORMATTED, $CACHE_GB GB budget"
 else info "Cache disk:  vmexec-data, $CACHE_GB GB budget"; fi
 info "VDDK:        ${VDDK:-already in place}"
