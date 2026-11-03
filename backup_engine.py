@@ -1173,12 +1173,14 @@ def import_vm_native(si, storage, source_rel_dir, target_ds, target_name, progre
     """
     Restores a VM by uploading files from StorageProvider to ESXi and registering the VMX.
     """
+    mat_dir = None
     try:
         log_info(f"[RESTORE] Starting import_vm_native for {target_name} on {target_ds}")
         content = si.RetrieveContent()
 
         from chain_restore import resolve_restore_source
         source_rel_dir, _mat = resolve_restore_source(storage, source_rel_dir)
+        mat_dir = _mat
         if _mat:
             log_info(f"[RESTORE] Using materialized CBT chain at {source_rel_dir}")
         
@@ -1269,6 +1271,15 @@ def import_vm_native(si, storage, source_rel_dir, target_ds, target_name, progre
     except Exception as e:
         log_error(f"[RESTORE] Native restore failed: {e}")
         return False, str(e)
+    finally:
+        # The rebuilt full disk is temporary: without this every restore left
+        # a full-size copy in backup storage (and in S3), success or not.
+        if mat_dir:
+            try:
+                storage.delete_dir(mat_dir)
+                log_info(f"[RESTORE] Removed temporary rebuilt disk {mat_dir}")
+            except Exception as e:  # noqa: BLE001
+                log_warn(f"[RESTORE] Could not remove {mat_dir}: {e}")
 
 # ===========================================================================
 #  MAIN: Export VM - Power-State Aware Backup
