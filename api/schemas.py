@@ -268,6 +268,8 @@ class VmResponse(BaseModel):
     power_state: str
     power_off_for_backup: bool
     cbt_enabled: bool = True
+    cbt_effective: bool = True
+    cbt_off_reason: Optional[str] = None
     host_name: str = ""
     last_secondary_copy_status: str = "none"
     last_backup_message: Optional[str] = None
@@ -370,6 +372,15 @@ class OverviewStorage(BaseModel):
     scan_error: Optional[str] = None
 
 
+class OverviewMachineDisk(BaseModel):
+    label: str
+    path: str
+    total_gb: float
+    used_gb: float
+    free_gb: float
+    used_pct: float
+
+
 class OverviewLiveJob(BaseModel):
     vm_id: int
     vm_name: str
@@ -404,6 +415,8 @@ class OverviewResponse(BaseModel):
     log_stats_7d: dict
     success_rate_7d: Optional[float] = None
     storage: OverviewStorage
+    # This machine's own disks (app data, local backup mount), any storage type.
+    machine_disks: List[OverviewMachineDisk] = []
     worker_online: bool
     worker_last_seen_seconds: Optional[int] = None
     max_global_backups: int

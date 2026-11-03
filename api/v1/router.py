@@ -408,7 +408,9 @@ def list_vms(db: Session = Depends(get_db), user: User = Depends(get_api_user)):
     from models import VM
     vms = db.query(VM).order_by(VM.vm_name).all()
     messages = backup_ops.latest_backup_messages(db, [v.vm_name for v in vms])
-    return [VmResponse(**backup_ops.vm_to_dict(v, messages.get(v.vm_name))) for v in vms]
+    from models import Config
+    config = db.query(Config).first()
+    return [VmResponse(**backup_ops.vm_to_dict(v, messages.get(v.vm_name), config)) for v in vms]
 
 
 @router.patch("/vms/{vm_id}", response_model=VmResponse)
@@ -422,7 +424,10 @@ def patch_vm(
         vm = backup_ops.update_vm_job(db, vm_id, body.model_dump(exclude_unset=True))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    return VmResponse(**backup_ops.vm_to_dict(vm, backup_ops.latest_backup_messages(db, [vm.vm_name]).get(vm.vm_name)))
+    from models import Config
+    return VmResponse(**backup_ops.vm_to_dict(
+        vm, backup_ops.latest_backup_messages(db, [vm.vm_name]).get(vm.vm_name), db.query(Config).first(),
+    ))
 
 
 @router.post("/inventory/apply")

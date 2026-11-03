@@ -9,6 +9,7 @@ from logger_util import log_info, log_error, log_critical
 from config_env import DATA_DIR
 
 SNAPSHOT_SWEEP_INTERVAL_SECS = 300
+WATCHDOG_INTERVAL_SECS = 60  # job time limit + stale busy-state check
 
 HEARTBEAT_FILE = os.path.join(DATA_DIR, "worker.heartbeat")
 
@@ -107,6 +108,7 @@ def run_daemon():
     ).start()
 
     last_snapshot_sweep = time.time()
+    last_watchdog = time.time()
 
     while True:
         try:
@@ -147,6 +149,16 @@ def run_daemon():
             db.close()
 
             now = time.time()
+            if now - last_watchdog >= WATCHDOG_INTERVAL_SECS:
+                last_watchdog = now
+                # Whole-job time limit, then busy states with no backup behind them.
+                worker.enforce_job_time_limit()
+                wdb = SessionLocal()
+                try:
+                    worker.clear_orphaned_actions(wdb)
+                finally:
+                    wdb.close()
+
             if now - last_snapshot_sweep >= SNAPSHOT_SWEEP_INTERVAL_SECS:
                 last_snapshot_sweep = now
                 threading.Thread(

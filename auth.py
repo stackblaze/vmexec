@@ -37,7 +37,43 @@ def generate_qr_code(uri):
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
 
-SECRET_KEY = "super-secure-backup-manager-secret"
+import os as _os
+
+from config_env import DATA_DIR as _DATA_DIR
+
+# Signing key for session and MFA-pending tokens. It used to be a constant in
+# this (public) file, so anyone could mint a valid admin session and skip the
+# password and MFA. Now: VMEXEC_SESSION_SECRET if set, otherwise a random key
+# generated once into the data volume (0600). Changing it logs everyone out,
+# nothing else; unlike data/secret.key it need not be backed up.
+SESSION_KEY_FILE = _os.path.join(_DATA_DIR, "session.key")
+SESSION_KEY_ENV = "VMEXEC_SESSION_SECRET"
+
+
+def _load_or_create_session_secret():
+    env = _os.environ.get(SESSION_KEY_ENV, "").strip()
+    if env:
+        return env
+    try:
+        with open(SESSION_KEY_FILE) as fh:
+            key = fh.read().strip()
+        if key:
+            return key
+    except FileNotFoundError:
+        pass
+    key = secrets.token_urlsafe(48)
+    try:
+        # O_EXCL: if another process created it first, use theirs.
+        fd = _os.open(SESSION_KEY_FILE, _os.O_WRONLY | _os.O_CREAT | _os.O_EXCL, 0o600)
+    except FileExistsError:
+        with open(SESSION_KEY_FILE) as fh:
+            return fh.read().strip()
+    with _os.fdopen(fd, "w") as fh:
+        fh.write(key)
+    return key
+
+
+SECRET_KEY = _load_or_create_session_secret()
 ALGORITHM = "HS256"
 MFA_PENDING_COOKIE = "mfa_pending_token"
 
@@ -68,6 +104,10 @@ def decode_mfa_pending_token(token: str):
 def decode_access_token(token: str):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        # An MFA-pending token (password checked, MFA not yet) is signed with
+        # the same key; it must never pass as a session, or MFA is skipped.
+        if payload.get("typ") is not None:
+            return None
         return payload.get("sub")
     except JWTError:
         return None
