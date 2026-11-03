@@ -214,73 +214,6 @@ def _download_file_http_range(si, datastore_name, file_path, start, length, vm=N
 # ---------------------------------------------------------------------------
 #  Preflight: Disconnect Removable Devices
 # ---------------------------------------------------------------------------
-def _disconnect_removable_devices(si, vm_name):
-    """Disconnects CD-ROMs and Floppies to prevent export issues."""
-    vm = _get_vm(si, vm_name)
-    if not vm:
-        return False
-
-    changes = []
-    for device in vm.config.hardware.device:
-        if isinstance(device, vim.VirtualCdrom):
-            needs_change = False
-            if isinstance(device.backing, (vim.VirtualCdromIsoBackingInfo,
-                                           vim.VirtualCdromAtapiBackingInfo,
-                                           vim.VirtualCdromPassthroughBackingInfo)):
-                needs_change = True
-            elif device.connectable and device.connectable.connected:
-                needs_change = True
-
-            if needs_change:
-                log_info(f"[PREFLIGHT] Disconnecting CD-ROM on {vm_name}")
-                device.backing = vim.VirtualCdromRemoteAtapiBackingInfo(deviceName="")
-                device.connectable.connected = False
-                device.connectable.startConnected = False
-                spec = vim.VirtualDeviceConfigSpec()
-                spec.device = device
-                spec.operation = vim.VirtualDeviceConfigSpec.Operation.edit
-                changes.append(spec)
-
-        elif isinstance(device, vim.VirtualFloppy):
-            needs_change = False
-            if isinstance(device.backing, (vim.VirtualFloppyImageBackingInfo,
-                                           vim.VirtualFloppyDeviceBackingInfo)):
-                needs_change = True
-            elif device.connectable and device.connectable.connected:
-                needs_change = True
-
-            if needs_change:
-                log_info(f"[PREFLIGHT] Disconnecting Floppy on {vm_name}")
-                device.backing = vim.VirtualFloppyRemoteDeviceBackingInfo(deviceName="")
-                device.connectable.connected = False
-                device.connectable.startConnected = False
-                spec = vim.VirtualDeviceConfigSpec()
-                spec.device = device
-                spec.operation = vim.VirtualDeviceConfigSpec.Operation.edit
-                changes.append(spec)
-
-    if not changes:
-        return True
-
-    config_spec = vim.vm.ConfigSpec()
-    config_spec.deviceChange = changes
-
-    task = vm.ReconfigVM_Task(spec=config_spec)
-    while task.info.state not in [vim.TaskInfo.State.success,
-                                  vim.TaskInfo.State.error]:
-        time.sleep(2)
-
-    if task.info.state == vim.TaskInfo.State.success:
-        log_info(f"[PREFLIGHT] Removable devices disconnected for {vm_name}")
-        return True
-    else:
-        log_error(f"[PREFLIGHT] Device disconnect failed: {task.info.error}")
-        return False
-
-
-# ---------------------------------------------------------------------------
-#  Preflight: Consolidation Check & Trigger
-# ---------------------------------------------------------------------------
 def _handle_consolidation(si, vm_name, timeout_mins=15):
     """Checks if consolidation is needed and triggers it."""
     vm = _get_vm(si, vm_name)
@@ -985,7 +918,12 @@ def preflight_check(si, vm_name, timeout_mins=15, config=None, storage=None, **k
 
     steps = [
         ("Remove stale snapshots", lambda: _remove_stale_snapshots(si, vm_name, timeout_mins)),
-        ("Disconnect removable devices", lambda: _disconnect_removable_devices(si, vm_name)),
+        # No "disconnect removable devices" step: it rewrote the VM's CD-ROM /
+        # floppy (ISO detached, not connected at power on) before every
+        # backup, and a CD-ROM the guest had locked raised a vCenter question
+        # that froze the VM until someone answered it (vault-us-central-1,
+        # 2026-11-03). Snapshot backups do not need it; VMExec does not change
+        # a VM's configuration to back it up.
         ("Handle consolidation", lambda: _handle_consolidation(si, vm_name, timeout_mins)),
     ]
     if config is not None:

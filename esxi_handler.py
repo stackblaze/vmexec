@@ -298,54 +298,6 @@ def wait_for_vm_idle(si, vm_name, timeout_mins=15):
     print(f"[WARN] {final_msg}")
     return False, final_msg
 
-def disconnect_removable_devices(si, vm_name):
-    """ Disconnects any ISO images from CD-ROM drives and Floppy drives before backup. """
-    content = si.RetrieveContent()
-    vm = _find_vm(si, vm_name)
-    
-    if not vm:
-        print(f"disconnect_removable_devices: VM {vm_name} not found.")
-        return False
-        
-    devices_to_change = []
-    for device in vm.config.hardware.device:
-        if isinstance(device, (vim.VirtualCdrom, vim.VirtualFloppy)):
-            # Check if it has a backing that points to a file (ISO/FLP)
-            has_file_backing = False
-            if hasattr(device.backing, 'fileName') and device.backing.fileName:
-                has_file_backing = True
-                
-            if has_file_backing:
-                print(f"Disconnecting removable media {device.backing.fileName} from {vm_name}...")
-                
-                if isinstance(device, vim.VirtualCdrom):
-                    new_backing = vim.VirtualCdromAtapiBackingInfo(deviceName="")
-                else:
-                    new_backing = vim.VirtualFloppyDeviceBackingInfo(deviceName="")
-                
-                device.backing = new_backing
-                device.connectable.connected = False
-                device.connectable.startConnected = False
-                
-                spec = vim.VirtualDeviceConfigSpec()
-                spec.device = device
-                spec.operation = vim.VirtualDeviceConfigSpec.Operation.edit
-                devices_to_change.append(spec)
-                
-    if not devices_to_change:
-        return True
-        
-    config_spec = vim.vm.ConfigSpec()
-    config_spec.deviceChange = devices_to_change
-    
-    task = vm.ReconfigVM_Task(spec=config_spec)
-    
-    import time
-    while task.info.state not in [vim.TaskInfo.State.success, vim.TaskInfo.State.error]:
-        time.sleep(2)
-        
-    return task.info.state == vim.TaskInfo.State.success
-
 def check_consolidation_needed(si, vm_name):
     """ Returns True if the VM requires disk consolidation. """
     content = si.RetrieveContent()
