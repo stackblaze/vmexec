@@ -62,15 +62,8 @@ const errors = computed(() => (status.value?.problems || []).filter((p) => p.sev
 
 const nextRunText = computed(() => {
   const n = status.value?.next_run
-  if (!n?.at) return 'nothing scheduled'
-  const at = new Date(n.at)
-  const now = new Date()
-  const time = at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
-  const sameDay = at.toDateString() === now.toDateString()
-  const tomorrow = new Date(now.getTime() + 86400000).toDateString() === at.toDateString()
-  const day = sameDay || (tomorrow && at.getHours() < 12) ? 'tonight' : tomorrow ? 'tomorrow' : at.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })
-  const vms = n.vm_count > 1 ? ` · ${n.vm_count} VMs` : ''
-  return `${day} ${time}${vms}`
+  if (!n) return '…'
+  return n.vm_count > 1 ? `${n.label} · ${n.vm_count} VMs` : n.label
 })
 
 const storageText = computed(() => {

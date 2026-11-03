@@ -178,6 +178,25 @@ def next_run(vms, now=None):
     return best, names
 
 
+def server_tz():
+    """The appliance's time zone name: schedules are in this zone."""
+    return time.strftime("%Z") or "local"
+
+
+def next_run_label(at, now=None):
+    """'tonight 02:00 UTC' / 'tomorrow 14:00 UTC' / 'Sun 8 Nov 03:00 UTC', in server time."""
+    if not at:
+        return "nothing scheduled"
+    now = now or datetime.datetime.now()
+    hm = f"{at:%H:%M} {server_tz()}"
+    days = (at.date() - now.date()).days
+    if days == 0:
+        return f"{'tonight' if at.hour >= 18 else 'today'} {hm}"
+    if days == 1:
+        return f"{'tonight' if at.hour < 6 else 'tomorrow'} {hm}"
+    return f"{at:%a} {at.day} {at:%b} {hm}"
+
+
 def get_status(db, scheduler_paused=False, vddk_installed=True, probe=True):
     vms = db.query(VM).all()
     protected = [v for v in vms if v.is_selected]
@@ -185,6 +204,14 @@ def get_status(db, scheduler_paused=False, vddk_installed=True, probe=True):
     logs = db.query(BackupLog).filter(BackupLog.timestamp >= since).order_by(BackupLog.timestamp.desc()).all()
     succeeded = sum(1 for log in logs if log.status == "Success")
     failed_logs = [log for log in logs if log.status == "Failed"]
+    # The banner shows only VMs that are still failing: a later success
+    # (or a VM no longer protected) clears it; the strip keeps the counts.
+    latest = {}
+    for log in logs:  # newest first
+        if log.status in ("Success", "Failed") and log.vm_name not in latest:
+            latest[log.vm_name] = log
+    protected_names = {v.vm_name for v in protected}
+    still_failing = [log for name, log in latest.items() if log.status == "Failed" and name in protected_names]
 
     storage = storage_health() if probe else {"healthy": None, "fstype": None, "probe_ms": None, "error": None}
     storage["location"] = os.environ.get("VMEXEC_REPO_LOCATION") or None
@@ -203,11 +230,12 @@ def get_status(db, scheduler_paused=False, vddk_installed=True, probe=True):
         if not vc["reachable"]:
             problems.append({"kind": "vcenter", "severity": "error",
                              "message": f"vCenter {vc['address']} is not reachable."})
-    if failed_logs:
-        first = failed_logs[0]
-        more = f" and {len(failed_logs) - 1} more" if len(failed_logs) > 1 else ""
+    if still_failing:
+        first = still_failing[0]
+        n = len(still_failing)
+        more = f" and {n - 1} more" if n > 1 else ""
         problems.append({"kind": "backup", "severity": "error", "vm_name": first.vm_name,
-                         "message": f"{len(failed_logs)} backup(s) failed in the last 24 h: "
+                         "message": f"{n} VM{'s' if n > 1 else ''} failed {'their' if n > 1 else 'its'} last backup: "
                                     f"{first.vm_name}{more}. {(first.message or '')[:200]}".strip()})
     if not vddk_installed:
         problems.append({"kind": "vddk", "severity": "error", "message": "VDDK is not installed."})
@@ -216,7 +244,8 @@ def get_status(db, scheduler_paused=False, vddk_installed=True, probe=True):
 
     return {
         "last24h": {"succeeded": succeeded, "failed": len(failed_logs)},
-        "next_run": {"at": at.isoformat() if at else None, "vm_count": len(names)},
+        "next_run": {"at": at.isoformat() if at else None, "vm_count": len(names), "label": next_run_label(at)},
+        "server_tz": server_tz(),
         "protected": {"count": len(protected), "total": len(vms)},
         "storage": storage,
         "vcenters": vcenters,

@@ -46,8 +46,10 @@ def policy_to_dict(policy):
 
 def describe(policy):
     """'Every day 02:00 · keep 7 daily, 4 weekly, 6 monthly'."""
+    import time
+    tz = time.strftime("%Z") or ""
     names = ["Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays", "Sundays"]
-    when = f"{policy.hour:02d}:{policy.minute:02d}"
+    when = f"{policy.hour:02d}:{policy.minute:02d}" + (f" {tz}" if tz else "")
     if policy.frequency == "daily":
         head = f"Every day {when}"
     else:

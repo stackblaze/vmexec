@@ -317,7 +317,7 @@ const paused = ref(false)
 const search = ref('')
 const filter = ref('all')
 const selectedIds = ref(new Set())
-const sortKey = ref('name')
+const sortKey = ref('policy')
 const sortDir = ref('asc')
 const selectAllRef = ref(null)
 const detailVm = ref(null)
@@ -350,8 +350,12 @@ function specs(vm) {
   return parts.join(' · ')
 }
 
+// Schedule times are the appliance's time zone (policy summaries carry it).
+const serverTz = computed(() => (policies.value[0]?.summary.match(/\d\d:\d\d ([A-Za-z+\-0-9]+) ·/) || [])[1] || '')
+
 function nextLabel(vm) {
-  return `${String(vm.schedule_hour).padStart(2, '0')}:${String(vm.schedule_minute).padStart(2, '0')}`
+  const hm = `${String(vm.schedule_hour).padStart(2, '0')}:${String(vm.schedule_minute).padStart(2, '0')}`
+  return serverTz.value ? `${hm} ${serverTz.value}` : hm
 }
 
 const filtered = computed(() => {

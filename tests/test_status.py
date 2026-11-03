@@ -108,6 +108,35 @@ class TestProblems(unittest.TestCase):
         self.assertIn("snapshot could not be created", s["problems"][1]["message"])
         self.assertEqual(s["protected"], {"count": 1, "total": 1})
 
+    def test_later_success_clears_the_banner(self):
+        import datetime as dt
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from models import Base, VM, BackupLog
+        engine = create_engine("sqlite://")
+        Base.metadata.create_all(bind=engine)
+        db = sessionmaker(bind=engine)()
+        now = dt.datetime.utcnow()
+        db.add(VM(vm_name="vc", is_selected=True, schedule_hour=2, schedule_minute=0))
+        db.add(BackupLog(vm_name="vc", status="Failed", message="shutdown failed", timestamp=now - dt.timedelta(hours=3)))
+        db.add(BackupLog(vm_name="vc", status="Success", message="ok", timestamp=now - dt.timedelta(hours=1)))
+        db.commit()
+        ok = {"healthy": True, "fstype": "9p", "probe_ms": 5, "error": None}
+        with patch.object(status_ops, "storage_health", return_value=ok), \
+             patch.object(status_ops, "cache_disk", return_value=None):
+            s = status_ops.get_status(db)
+        self.assertEqual(s["last24h"], {"succeeded": 1, "failed": 1})
+        self.assertEqual(s["problems"], [])
+
+    def test_next_run_label(self):
+        import datetime as dt
+        now = dt.datetime(2026, 11, 3, 16, 0)
+        with patch.object(status_ops, "server_tz", return_value="UTC"):
+            self.assertEqual(status_ops.next_run_label(dt.datetime(2026, 11, 4, 2, 0), now), "tonight 02:00 UTC")
+            self.assertEqual(status_ops.next_run_label(dt.datetime(2026, 11, 4, 14, 0), now), "tomorrow 14:00 UTC")
+            self.assertEqual(status_ops.next_run_label(dt.datetime(2026, 11, 3, 20, 0), now), "tonight 20:00 UTC")
+            self.assertEqual(status_ops.next_run_label(dt.datetime(2026, 11, 8, 3, 0), now), "Sun 8 Nov 03:00 UTC")
+
 
 if __name__ == "__main__":
     unittest.main()

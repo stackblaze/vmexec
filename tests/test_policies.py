@@ -1,5 +1,6 @@
 """Backup policies (services/policy_ops.py) on an in-memory database."""
 import unittest
+from unittest.mock import patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -105,9 +106,10 @@ class TestEdit(PolicyTestCase):
             policy_ops.update_policy(self.db, self.policy("Daily").id, {"hour": 24})
 
     def test_describe_and_retention(self):
-        p = policy_ops.list_policies(self.db)
-        self.assertEqual(p[0]["summary"], "Every day 02:00 · keep 7 daily, 4 weekly, 6 monthly")
-        self.assertEqual(p[1]["summary"], "Sundays 03:00 · keep 4 weekly, 6 monthly")
+        with patch("time.strftime", return_value="UTC"):
+            p = policy_ops.list_policies(self.db)
+        self.assertEqual(p[0]["summary"], "Every day 02:00 UTC · keep 7 daily, 4 weekly, 6 monthly")
+        self.assertEqual(p[1]["summary"], "Sundays 03:00 UTC · keep 4 weekly, 6 monthly")
         self.assertEqual(policy_ops.retention_for(self.vm("vyos-01")), (7, 4, 6))
         self.assertIsNone(policy_ops.retention_for(self.vm("swift-dental-01")))
 

@@ -32,7 +32,7 @@
         ><span class="w-2 h-2 rounded-full" :class="status?.storage?.healthy ? 'bg-emerald-500' : 'bg-red-500'" aria-hidden="true"></span>{{ status ? (status.storage.healthy ? 'ZeroFS healthy' : 'Not available') : 'Checking…' }}</span>
       </div>
       <p v-if="status?.storage?.error" class="text-sm text-red-600 dark:text-red-400 m-0">{{ status.storage.error }}</p>
-      <dl class="grid gap-x-6 gap-y-4 grid-cols-[repeat(auto-fit,minmax(13rem,1fr))] m-0 text-sm">
+      <dl class="grid gap-x-6 gap-y-4 grid-cols-[repeat(auto-fit,minmax(13rem,1fr))] mt-0 text-sm">
         <div><dt class="text-xs text-muted mb-1">S3 location</dt><dd class="m-0 font-mono text-xs">{{ status?.storage?.location || 'Not set by install.sh' }}</dd></div>
         <div><dt class="text-xs text-muted mb-1">Encryption</dt><dd class="m-0">{{ status?.storage?.encrypted ? 'On · password in the region vault' : 'Unknown' }}</dd></div>
         <div><dt class="text-xs text-muted mb-1">Write check</dt><dd class="m-0">{{ status?.storage?.probe_ms != null ? `${status.storage.probe_ms} ms, synced to S3` : '—' }}</dd></div>

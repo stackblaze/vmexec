@@ -156,7 +156,10 @@ const finishLabel = computed(() => {
 
 const shown = computed(() => {
   const q = search.value.toLowerCase()
-  return vms.value.filter((v) => !q || v.vm_name.toLowerCase().includes(q))
+  // protected VMs first, then by name
+  return vms.value
+    .filter((v) => !q || v.vm_name.toLowerCase().includes(q))
+    .sort((a, b) => (!!b.policy_id - !!a.policy_id) || a.vm_name.localeCompare(b.vm_name))
 })
 
 function toggle(id, on) {
