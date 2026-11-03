@@ -1050,16 +1050,40 @@ def perform_restore(config, target_ip, target_user, target_password, source_ova_
         # with no upload activity; surface it so the UI isn't frozen at 2%.
         update_job(3, action="Materializing backup chain (this can take several minutes)...")
 
-        log_info(f"[RESTORE] Calling backup_engine.import_vm_native...")
-        success, msg = backup_engine.import_vm_native(
-            si=si,
-            storage=storage,
-            source_rel_dir=source_rel_dir,
-            target_ds=datastore,
-            target_name=target_name,
-            progress_callback=lambda p: update_job(p, action=f"Restoring files ({p}%)..."),
-            is_cancelled_func=is_cancelled
-        )
+        def old_path():
+            log_info(f"[RESTORE] Calling backup_engine.import_vm_native...")
+            return backup_engine.import_vm_native(
+                si=si,
+                storage=storage,
+                source_rel_dir=source_rel_dir,
+                target_ds=datastore,
+                target_name=target_name,
+                progress_callback=lambda p: update_job(p, action=f"Restoring files ({p}%)..."),
+                is_cancelled_func=is_cancelled
+            )
+
+        # Fast path first: thin disks written through VDDK, data only
+        # (restore_vddk.py). It refuses before changing anything when the
+        # point needs the old path, and removes its partial VM if it fails.
+        import restore_vddk
+        try:
+            update_job(4, action="Restoring (thin disks via VDDK)...")
+            success, msg = restore_vddk.restore_point(
+                si, storage, source_rel_dir, datastore, target_name,
+                target_ip, target_user, target_password, config=config,
+                progress_callback=lambda p: update_job(p, action=f"Restoring via VDDK ({p}%)..."),
+                is_cancelled_func=is_cancelled,
+                upload_file=lambda si_, ds, dest, st, src, dc: backup_engine._upload_file_http(
+                    si_, ds, dest, st, src, is_cancelled, None, 0, 0, dc_path=dc),
+            )
+        except restore_vddk.FastRestoreUnsupported as why:
+            log_info(f"[RESTORE] Fast path not used ({why}); using the full-copy path")
+            success, msg = old_path()
+        except Exception as fast_err:
+            if is_cancelled():
+                raise
+            log_warn(f"[RESTORE] Fast path failed ({str(fast_err)[:300]}); retrying with the full-copy path")
+            success, msg = old_path()
 
         if success:
             update_job(100, action="Completed", status="Success")
