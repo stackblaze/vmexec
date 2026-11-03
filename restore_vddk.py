@@ -158,8 +158,10 @@ def _start_nbdkit(si, vm, disk_ds_path, server_host, user, pw_path, config):
     from vddk_transport import _wait_for_unix_socket, get_server_thumbprint, get_vddk_libdir, ensure_vddk_runtime_dirs
     ensure_vddk_runtime_dirs()
     sock = os.path.join(tempfile.gettempdir(), f"nbdkit_restore_{os.getpid()}_{int(time.time() * 1000)}.sock")
+    # -f: stay in the foreground. Without it nbdkit forks, the server keeps
+    # running after we "stop" the parent, and holds the disk open.
     cmd = [
-        "nbdkit", "-v", "vddk",
+        "nbdkit", "-f", "-v", "vddk",
         f"libdir={get_vddk_libdir(config)}",
         f"server={server_host}",
         f"user={user}",
@@ -178,6 +180,18 @@ def _start_nbdkit(si, vm, disk_ds_path, server_host, user, pw_path, config):
     os.close(err_fd)
     _wait_for_unix_socket(sock, proc, err_path)
     return proc, sock, err_path
+
+
+def _stop(proc):
+    """Stop nbdkit; it must be gone before the VM is touched again."""
+    if not proc or proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=10)
 
 
 def _nbdcopy_full(full_local, sock, progress, base, span, is_cancelled):
@@ -227,10 +241,17 @@ def _write_deltas(delta_paths, sock):
                         piece = data[i:i + NBD_WRITE_CHUNK]
                         proc.stdin.write(struct.pack(">QQ", off + i, len(piece)))
                         proc.stdin.write(piece)
-            proc.stdin.close()
         except BrokenPipeError:
             pass
-        out, err = proc.communicate(timeout=7200)
+        finally:
+            try:
+                proc.stdin.close()
+            except BrokenPipeError:
+                pass
+        # communicate() would flush the stdin we just closed: read directly.
+        out = proc.stdout.read()
+        err = proc.stderr.read()
+        proc.wait(timeout=7200)
         if proc.returncode != 0:
             raise RuntimeError(f"extent writer failed: {(err or b'').decode(errors='replace')[-400:]}")
         return int((out or b"0").strip() or 0)
@@ -292,12 +313,7 @@ def restore_point(si, storage, point_rel_dir, target_ds, target_name, server_hos
                 log_info(f"[RESTORE-FAST] {d['descriptor']}: full copied (zeros skipped), "
                          f"{len(d['deltas_local'])} incremental(s), {written} changed bytes")
             finally:
-                if proc and proc.poll() is None:
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=60)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
+                _stop(proc)
                 for path in (sock, err):
                     if path and os.path.exists(path):
                         os.unlink(path)
