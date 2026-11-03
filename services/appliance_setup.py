@@ -11,6 +11,11 @@ inside the worker container:
       Register vCenter (username and password on stdin, one per line) if it
       is not registered yet. Verifies the login like Settings > vCenter.
 
+  python -m services.appliance_setup vcenter <name> <address>  < creds
+      Same, and when this vCenter is already registered with other
+      credentials, switch it to these (login verified first). Used to move
+      VMExec onto its own least-privilege account.
+
   python -m services.appliance_setup copy-db /mnt/backups/_appliance
       Copy the database and its keys into backup storage (daily timer), so
       install.sh --recover on a new VM brings back jobs, policies and the
@@ -95,6 +100,41 @@ def add_vcenter(name, address):
         db.close()
 
 
+def set_vcenter(name, address):
+    import esxi_handler
+    from models import init_db, SessionLocal, ESXiHost
+    lines = sys.stdin.read().splitlines()
+    if len(lines) < 2 or not lines[0] or not lines[1]:
+        raise SystemExit("vcenter: expected username and password on stdin")
+    user, password = lines[0], lines[1]
+    init_db()
+    db = SessionLocal()
+    try:
+        addr = esxi_handler.normalize_host(address)
+        host = db.query(ESXiHost).filter(ESXiHost.host_ip == addr).first()
+        if host is None:
+            from services import backup_ops
+            try:
+                backup_ops.add_esxi_host(db, name, addr, user, password, connection_type="auto")
+            except (ValueError, ConnectionError) as e:
+                raise SystemExit(f"vcenter: {e}")
+            print(f"vCenter {addr} connected as {user}")
+            return
+        if host.username == user and host.password == password:
+            print(f"vCenter {addr}: already uses {user}")
+            return
+        try:
+            si = esxi_handler.connect_esxi(addr, user, password, raise_on_error=True)
+        except esxi_handler.VSphereConnectionError as e:
+            raise SystemExit(f"vcenter: login as {user} failed: {e}")
+        esxi_handler.Disconnect(si)
+        host.username, host.password = user, password
+        db.commit()
+        print(f"vCenter {addr}: switched to {user}")
+    finally:
+        db.close()
+
+
 def main(argv):
     if len(argv) == 2 and argv[0] == "storage":
         return set_storage(argv[1])
@@ -102,6 +142,8 @@ def main(argv):
         return copy_db(argv[1])
     if len(argv) == 3 and argv[0] == "add-vcenter":
         return add_vcenter(argv[1], argv[2])
+    if len(argv) == 3 and argv[0] == "vcenter":
+        return set_vcenter(argv[1], argv[2])
     raise SystemExit(__doc__)
 
 
