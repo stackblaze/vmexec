@@ -57,7 +57,7 @@ async function onVerify() {
   error.value = ''
   try {
     await auth.completeMfaSetup(code.value)
-    router.push('/overview')
+    router.push('/backup')
   } catch (e) {
     error.value = e.message
   }

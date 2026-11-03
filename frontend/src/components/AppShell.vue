@@ -5,9 +5,9 @@
         <div class="grid grid-cols-[1fr_auto_1fr] items-center h-16 gap-3">
           <div class="flex items-center gap-2 justify-self-start min-w-0">
             <RouterLink
-              to="/overview"
+              to="/backup"
               class="inline-flex items-center rounded-md no-underline text-inherit transition-opacity duration-150 hover:opacity-85"
-              aria-label="VMExec home — Overview"
+              aria-label="VMExec home — Backup"
             >
               <span class="text-[1.35rem] font-extrabold tracking-[-0.03em] leading-none pointer-events-none">
                 <span class="text-orange-500">VM</span><span class="text-main font-bold">Exec</span>
@@ -134,7 +134,7 @@
     </footer>
 
     <ConfirmModal />
-    <SetupWizard v-if="auth.isAdmin" />
+    <SetupWizard v-if="auth.isOperator" />
   </div>
 </template>
 
@@ -162,7 +162,6 @@ const themeOptions = [
 ]
 
 const tabs = [
-  { to: '/overview', label: 'Overview' },
   { to: '/backup', label: 'Backup' },
   { to: '/restore', label: 'Restore' },
   { to: '/settings/storage', label: 'Settings' },

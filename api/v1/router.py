@@ -428,7 +428,9 @@ def list_vms(db: Session = Depends(get_db), user: User = Depends(get_api_user)):
     messages = backup_ops.latest_backup_messages(db, [v.vm_name for v in vms])
     from models import Config
     config = db.query(Config).first()
-    return [VmResponse(**backup_ops.vm_to_dict(v, messages.get(v.vm_name), config)) for v in vms]
+    points = backup_ops.restore_point_counts(config, [v.vm_name for v in vms if v.is_selected])
+    return [VmResponse(**backup_ops.vm_to_dict(v, messages.get(v.vm_name), config),
+                       restore_points=points.get(v.vm_name)) for v in vms]
 
 
 @router.patch("/vms/{vm_id}", response_model=VmResponse)

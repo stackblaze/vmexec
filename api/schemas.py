@@ -288,6 +288,7 @@ class VmResponse(BaseModel):
     last_backup_message: Optional[str] = None
     policy_id: Optional[int] = None
     policy_name: Optional[str] = None
+    restore_points: Optional[int] = None  # None = unknown (no chain / not local storage)
 
 
 class PolicyResponse(BaseModel):

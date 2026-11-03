@@ -1,276 +1,134 @@
 <template>
-  <div>
-    <h1 class="text-2xl font-bold mb-6">Settings</h1>
-    <div class="flex gap-6 items-start max-md:flex-col">
-      <aside class="w-[13.5rem] shrink-0 sticky top-4 max-md:w-full max-md:static">
-        <div class="overflow-hidden flex flex-col max-h-[calc(100vh-7rem)] bg-card border border-border rounded-lg shadow-card transition-all duration-300">
-          <div class="py-3.5 px-4 text-[0.6875rem] font-bold uppercase tracking-wider text-muted border-b border-border bg-nav">Settings</div>
-          <nav class="flex flex-col p-1.5 gap-0.5 flex-1 min-h-0 overflow-y-auto max-md:flex-row max-md:flex-wrap">
-            <button
-              v-for="p in panels"
-              :key="p.id"
-              type="button"
-              class="flex items-center gap-2.5 w-full px-3 py-2 text-[0.8125rem] font-medium text-left text-muted bg-transparent border-0 rounded-md cursor-pointer transition-colors duration-150 hover:text-main hover:bg-btn-sec-hover max-md:w-auto max-md:flex-1 max-md:min-w-[calc(50%-0.25rem)] max-md:justify-center"
-              :class="{ 'text-brand bg-brand/10 font-semibold': panel === p.id }"
-              @click="go(p.id)"
-            >{{ p.label }}</button>
-          </nav>
-          <div v-if="auth.isAdmin" class="p-2.5 border-t border-border bg-nav shrink-0 max-md:hidden">
-            <button
-              type="button"
-              class="w-full px-3 py-2 text-[0.8125rem] font-medium rounded-md border border-dashed border-border text-muted bg-transparent cursor-pointer transition-[color,border-color,background] duration-150 hover:text-brand hover:border-brand hover:bg-brand/6"
-              @click="openWizard"
-            >Setup wizard</button>
-          </div>
-        </div>
-      </aside>
+  <div class="max-w-4xl">
+    <h1 class="text-2xl font-bold mb-1">Settings</h1>
+    <p class="text-sm text-muted mb-5">Storage, vCenter and VDDK are set up by install.sh. Policies and alerts are edited here.</p>
 
-      <div class="flex-1 min-w-0">
-        <div
-          v-if="msg"
-          class="mb-4 text-sm px-4 py-2.5 rounded border"
-          :class="msgOk ? 'text-emerald-400 border-emerald-400/30' : 'text-red-400 border-red-400/30'"
-        >{{ msg }}</div>
+    <div role="tablist" aria-label="Settings" class="flex flex-wrap gap-1 border-b border-border mb-5">
+      <button
+        v-for="p in panels"
+        :key="p.id"
+        type="button"
+        role="tab"
+        :aria-selected="panel === p.id"
+        class="min-h-11 px-4 -mb-px text-sm bg-transparent border-0 border-b-2 border-solid cursor-pointer"
+        :class="panel === p.id ? 'border-brand text-main font-semibold' : 'border-transparent text-muted font-medium hover:text-main'"
+        @click="go(p.id)"
+      >{{ p.label }}</button>
+    </div>
 
-        <!-- Storage -->
-        <div v-if="panel === 'storage'">
-          <h2 class="text-[1.375rem] font-bold mb-1">Storage</h2>
-          <p class="text-sm text-muted mb-4">Primary backup repository and optional secondary copy.</p>
-          <div class="bg-card border border-border rounded-lg shadow-card transition-all duration-300 p-5 mb-4">
-            <h3 class="text-sm font-semibold mb-3">Primary repository</h3>
-            <div class="flex flex-wrap items-center gap-3 mb-4">
-              <div class="flex flex-wrap items-center gap-3">
-                <label v-for="t in ['SMB','NFS','S3']" :key="t" class="inline-flex items-center gap-1.5 text-xs font-medium cursor-pointer">
-                  <input v-model="cfg.storage_type" type="radio" :value="t" /> {{ t }}
-                </label>
-              </div>
-              <button
-                type="button"
-                class="inline-flex items-center justify-center gap-1.5 rounded-md border border-btn-sec-border bg-btn-sec px-3 py-1.5 text-xs font-semibold text-btn-sec-text hover:bg-btn-sec-hover ml-auto"
-                @click="testStorage"
-              >Verify connection</button>
-            </div>
-            <div v-if="cfg.storage_type === 'SMB'" class="space-y-3">
-              <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">UNC Path</span><input v-model="cfg.smb_unc_path" class="w-full py-2 px-3 font-mono text-sm mt-1" /></div>
-              <div class="grid grid-cols-2 gap-4">
-                <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">Username</span><input v-model="cfg.smb_user" class="w-full py-2 px-3 text-sm mt-1" /></div>
-                <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">Password</span><input v-model="cfg.smb_password" type="password" placeholder="(Unchanged)" class="w-full py-2 px-3 text-sm mt-1" /></div>
-              </div>
-            </div>
-            <div v-else-if="cfg.storage_type === 'NFS'">
-              <span class="block mb-1 text-xs font-semibold uppercase text-muted">NFS Export Path</span><input v-model="cfg.nfs_path" class="w-full py-2 px-3 font-mono text-sm mt-1" />
-            </div>
-            <div v-else class="grid grid-cols-2 gap-4">
-              <div class="col-span-2"><span class="block mb-1 text-xs font-semibold uppercase text-muted">S3 Endpoint</span><input v-model="cfg.s3_endpoint" class="w-full py-2 px-3 text-sm mt-1" /></div>
-              <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">Access Key</span><input v-model="cfg.s3_access_key" class="w-full py-2 px-3 text-sm mt-1" /></div>
-              <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">Secret Key</span><input v-model="cfg.s3_secret_key" type="password" placeholder="(Unchanged)" class="w-full py-2 px-3 text-sm mt-1" /></div>
-              <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">Bucket</span><input v-model="cfg.s3_bucket" class="w-full py-2 px-3 text-sm mt-1" /></div>
-              <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">Region</span><input v-model="cfg.s3_region" class="w-full py-2 px-3 text-sm mt-1" /></div>
-            </div>
-          </div>
-          <div class="bg-card border border-border rounded-lg shadow-card transition-all duration-300 p-5">
-            <h3 class="text-sm font-semibold mb-3">Secondary copy (3-2-1)</h3>
-            <label class="flex items-center gap-2 text-sm mb-4 cursor-pointer">
-              <input v-model="cfg.secondary_copy_enabled" type="checkbox" /> Enable secondary copy after backup
-            </label>
-            <div :class="{ 'opacity-50 pointer-events-none': !cfg.secondary_copy_enabled }">
-              <div class="flex flex-wrap items-center gap-3 mb-4">
-                <span class="block mb-0 text-xs font-semibold uppercase text-muted">Repository type</span>
-                <div class="flex flex-wrap items-center gap-3">
-                  <label v-for="t in ['SMB','NFS','S3']" :key="'s'+t" class="inline-flex items-center gap-1.5 text-xs font-medium cursor-pointer">
-                    <input v-model="cfg.secondary_storage_type" type="radio" :value="t" /> {{ t }}
-                  </label>
-                </div>
-              </div>
-              <div v-if="cfg.secondary_storage_type === 'SMB'" class="space-y-3">
-                <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">UNC Path</span><input v-model="cfg.secondary_smb_unc_path" class="w-full py-2 px-3 font-mono text-sm mt-1" /></div>
-                <div class="grid grid-cols-2 gap-4">
-                  <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">Username</span><input v-model="cfg.secondary_smb_user" class="w-full py-2 px-3 text-sm mt-1" /></div>
-                  <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">Password</span><input v-model="cfg.secondary_smb_password" type="password" placeholder="(Unchanged)" class="w-full py-2 px-3 text-sm mt-1" /></div>
-                </div>
-              </div>
-              <div v-else-if="cfg.secondary_storage_type === 'NFS' || !cfg.secondary_storage_type">
-                <span class="block mb-1 text-xs font-semibold uppercase text-muted">NFS Export Path</span><input v-model="cfg.secondary_nfs_path" class="w-full py-2 px-3 font-mono text-sm mt-1" />
-              </div>
-              <div v-else class="grid grid-cols-2 gap-4">
-                <div class="col-span-2"><span class="block mb-1 text-xs font-semibold uppercase text-muted">S3 Endpoint</span><input v-model="cfg.secondary_s3_endpoint" class="w-full py-2 px-3 text-sm mt-1" /></div>
-                <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">Access Key</span><input v-model="cfg.secondary_s3_access_key" class="w-full py-2 px-3 text-sm mt-1" /></div>
-                <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">Secret Key</span><input v-model="cfg.secondary_s3_secret_key" type="password" placeholder="(Unchanged)" class="w-full py-2 px-3 text-sm mt-1" /></div>
-                <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">Bucket</span><input v-model="cfg.secondary_s3_bucket" class="w-full py-2 px-3 text-sm mt-1" /></div>
-                <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">Region</span><input v-model="cfg.secondary_s3_region" class="w-full py-2 px-3 text-sm mt-1" /></div>
-              </div>
-            </div>
-          </div>
-          <div class="flex justify-end gap-2 mt-4">
-            <button
-              type="button"
-              class="inline-flex items-center justify-center gap-1.5 rounded-md border-0 bg-brand px-6 py-2 text-sm font-semibold text-white hover:bg-brand-hover disabled:opacity-55"
-              @click="saveStorage"
-            >Save storage</button>
-          </div>
-        </div>
+    <div
+      v-if="msg"
+      class="mb-4 text-sm px-4 py-2.5 rounded border"
+      :class="msgOk ? 'text-emerald-600 dark:text-emerald-400 border-emerald-400/30' : 'text-red-600 dark:text-red-400 border-red-400/30'"
+    >{{ msg }}</div>
 
-        <!-- Engine -->
-        <div v-else-if="panel === 'engine'">
-          <h2 class="text-[1.375rem] font-bold mb-1">Engine</h2>
-          <p class="text-sm text-muted mb-4">Worker, transport, and backup policy.</p>
-          <div class="bg-card border border-border rounded-lg shadow-card transition-all duration-300 p-4">
-            <section class="border-t border-border py-3 first:border-t-0 first:pt-0">
-              <h3 class="text-[0.8125rem] font-semibold mb-2">Concurrency &amp; transport</h3>
-              <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">Max global</span><input v-model.number="cfg.max_global_backups" type="number" min="1" max="32" class="w-full py-1.5 px-3 text-center text-sm" /></div>
-                <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">Max per host</span><input v-model.number="cfg.max_backups_per_host" type="number" min="1" max="8" class="w-full py-1.5 px-3 text-center text-sm" /></div>
-                <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">Schedules / hour</span><input v-model.number="cfg.max_schedules_per_hour" type="number" min="1" max="12" class="w-full py-1.5 px-3 text-center text-sm" /></div>
-                <div>
-                  <span class="block mb-1 text-xs font-semibold uppercase text-muted">Transport</span>
-                  <select v-model="cfg.backup_transport" class="w-full py-1.5 px-3 text-sm">
-                    <option value="nbd">VDDK / NBD</option>
-                    <option value="nfc">NFC only</option>
-                    <option value="legacy">Legacy</option>
-                  </select>
-                </div>
-                <div v-if="cfg.backup_transport === 'nbd' || !cfg.backup_transport" class="col-span-2">
-                  <span class="block mb-1 text-xs font-semibold uppercase text-muted">VDDK library path</span><input v-model="cfg.vddk_libdir" class="w-full py-1.5 px-3 text-sm font-mono" />
-                  <p class="mt-1.5 text-xs leading-relaxed text-muted">
-                    The VDDK is proprietary and cannot be shipped with VMExec, so you supply it once.
-                    Download the <strong>Linux 64-bit</strong> tarball
-                    (<code class="font-mono">VMware-vix-disklib-*.tar.gz</code>, v8 or v9) from
-                    <a href="https://developer.broadcom.com/sdks/vmware-virtual-disk-development-kit-vddk/latest"
-                       target="_blank" rel="noopener noreferrer"
-                       class="text-brand underline hover:no-underline">Broadcom</a>
-                    (free account required), drop it in <code class="font-mono">vendor/vddk/</code> on the
-                    server, and it installs automatically the next time a host is added.
-                    Until then, backups using this transport will fail.
-                  </p>
-                </div>
-                <div v-if="cfg.backup_transport === 'legacy'" class="col-span-2">
-                  <span class="block mb-1 text-xs font-semibold uppercase text-muted">Disk estimate ×</span><input v-model.number="cfg.datastore_est_multiplier" type="number" min="1" max="3" step="0.1" class="w-full py-1.5 px-3 text-center text-sm" />
-                </div>
-              </div>
-            </section>
-            <section class="border-t border-border py-3 first:border-t-0 first:pt-0">
-              <h3 class="text-[0.8125rem] font-semibold mb-2">Backups &amp; retention</h3>
-              <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                <div>
-                  <span class="block mb-1 text-xs font-semibold uppercase text-muted">Incremental (CBT)</span>
-                  <div class="flex items-center gap-2 min-h-8 mt-1">
-                    <label class="relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center">
-                      <input v-model="cfg.cbt_enabled" type="checkbox" class="peer sr-only" :disabled="cfg.storage_type === 'S3'" />
-                      <span class="h-5 w-9 rounded-full bg-border peer-checked:bg-brand peer-disabled:opacity-45 transition-colors"></span>
-                      <span class="absolute left-0.5 top-0.5 size-4 rounded-full bg-white shadow transition-transform peer-checked:translate-x-4"></span>
-                    </label>
-                    <span class="text-xs font-medium">{{ cfg.cbt_enabled ? 'On' : 'Off' }}</span>
-                  </div>
-                </div>
-                <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">Full every N runs</span><input v-model.number="cfg.cbt_full_interval" type="number" min="1" max="60" class="w-full py-1.5 px-3 text-center text-sm" /></div>
-                <div>
-                  <span class="block mb-1 text-xs font-semibold uppercase text-muted">Retention</span>
-                  <select v-model="cfg.retention_mode" class="w-full py-1.5 px-3 text-sm mt-1">
-                    <option value="count">Count (per VM)</option>
-                    <option value="gfs">GFS</option>
-                  </select>
-                </div>
-                <template v-if="cfg.retention_mode === 'gfs'">
-                  <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">Daily</span><input v-model.number="cfg.gfs_daily_keep" type="number" min="1" max="90" class="w-full py-1.5 px-3 text-center text-sm mt-1" /></div>
-                  <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">Weekly</span><input v-model.number="cfg.gfs_weekly_keep" type="number" min="0" max="52" class="w-full py-1.5 px-3 text-center text-sm mt-1" /></div>
-                  <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">Monthly</span><input v-model.number="cfg.gfs_monthly_keep" type="number" min="0" max="120" class="w-full py-1.5 px-3 text-center text-sm mt-1" /></div>
-                </template>
-              </div>
-              <p v-if="cfg.storage_type === 'S3'" class="mt-2 text-xs px-3 py-2 rounded bg-amber-500/12 text-amber-500">S3 selected — CBT disabled; full backups only.</p>
-            </section>
-            <section class="border-t border-border py-3 first:border-t-0 first:pt-0">
-              <h3 class="text-[0.8125rem] font-semibold mb-2">Safety &amp; performance</h3>
-              <div class="grid grid-cols-2 gap-3 items-end min-[641px]:grid-cols-4 min-[1101px]:grid-cols-7">
-                <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">Min DS free %</span><input v-model.number="cfg.datastore_min_free_pct" type="number" min="5" max="50" class="w-full py-1.5 px-3 text-center text-sm" /></div>
-                <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">DS headroom GB</span><input v-model.number="cfg.datastore_headroom_gb" type="number" min="0" max="500" class="w-full py-1.5 px-3 text-center text-sm" /></div>
-                <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">Min repo GB</span><input v-model.number="cfg.repo_min_free_gb" type="number" min="1" max="10000" class="w-full py-1.5 px-3 text-center text-sm" /></div>
-                <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">Compression</span><input v-model.number="cfg.perf_compression_level" type="number" min="0" max="9" class="w-full py-1.5 px-3 text-center text-sm" /></div>
-                <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">ESXi timeout</span><input v-model.number="cfg.backup_timeout_mins" type="number" min="5" max="1440" class="w-full py-1.5 px-3 text-center text-sm" /></div>
-                <div>
-                  <span class="block mb-1 text-xs font-semibold uppercase text-muted">Skip infra VMs</span>
-                  <div class="flex items-center gap-2 min-h-8 mt-1">
-                    <label class="relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center">
-                      <input v-model="cfg.exclude_infra_vms" type="checkbox" class="peer sr-only" />
-                      <span class="h-5 w-9 rounded-full bg-border peer-checked:bg-brand peer-disabled:opacity-45 transition-colors"></span>
-                      <span class="absolute left-0.5 top-0.5 size-4 rounded-full bg-white shadow transition-transform peer-checked:translate-x-4"></span>
-                    </label>
-                    <span class="text-xs font-medium">{{ cfg.exclude_infra_vms ? 'On' : 'Off' }}</span>
-                  </div>
-                </div>
-              </div>
-            </section>
-            <div class="flex justify-end gap-2 mt-3 pt-3 border-t border-border">
-              <button
-                type="button"
-                class="inline-flex items-center justify-center gap-1.5 rounded-md border-0 bg-brand px-5 py-1.5 text-sm font-semibold text-white hover:bg-brand-hover disabled:opacity-55"
-                @click="saveStorage"
-              >Save engine settings</button>
-            </div>
-          </div>
+    <!-- Storage (read-only: set by install.sh) -->
+    <section v-if="panel === 'storage'" role="tabpanel" aria-label="Storage" class="bg-card border border-border rounded-lg shadow-card p-6 space-y-5">
+      <div class="flex flex-wrap justify-between items-center gap-3">
+        <h2 class="text-lg font-semibold m-0">Backup storage</h2>
+        <span
+          class="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full"
+          :class="status?.storage?.healthy ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400' : 'bg-red-500/15 text-red-700 dark:text-red-400'"
+        ><span class="w-2 h-2 rounded-full" :class="status?.storage?.healthy ? 'bg-emerald-500' : 'bg-red-500'" aria-hidden="true"></span>{{ status ? (status.storage.healthy ? 'ZeroFS healthy' : 'Not available') : 'Checking…' }}</span>
+      </div>
+      <p v-if="status?.storage?.error" class="text-sm text-red-600 dark:text-red-400 m-0">{{ status.storage.error }}</p>
+      <dl class="grid gap-x-6 gap-y-4 grid-cols-[repeat(auto-fit,minmax(13rem,1fr))] m-0 text-sm">
+        <div><dt class="text-xs text-muted mb-1">S3 location</dt><dd class="m-0 font-mono text-xs">{{ status?.storage?.location || 'Not set by install.sh' }}</dd></div>
+        <div><dt class="text-xs text-muted mb-1">Encryption</dt><dd class="m-0">{{ status?.storage?.encrypted ? 'On · password in the region vault' : 'Unknown' }}</dd></div>
+        <div><dt class="text-xs text-muted mb-1">Write check</dt><dd class="m-0">{{ status?.storage?.probe_ms != null ? `${status.storage.probe_ms} ms, synced to S3` : '—' }}</dd></div>
+        <div><dt class="text-xs text-muted mb-1">Mount</dt><dd class="m-0 font-mono text-xs">{{ cfg.nfs_path || '/mnt/backups' }}{{ status?.storage?.fstype ? ` (${status.storage.fstype})` : '' }}</dd></div>
+      </dl>
+      <div v-if="status?.storage?.cache">
+        <div class="flex justify-between text-sm mb-1.5"><span>Local cache</span><span class="text-muted">{{ status.storage.cache.used_gb }} GB of {{ status.storage.cache.total_gb }} GB</span></div>
+        <div role="progressbar" aria-label="Local cache used" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="Math.round(status.storage.cache.used_pct)" class="h-2 rounded bg-border overflow-hidden">
+          <div class="h-full bg-brand" :style="{ width: status.storage.cache.used_pct + '%' }"></div>
         </div>
+        <p class="text-xs text-muted mt-2 mb-0">The cache only speeds things up. Backups live in S3, so there is no disk to fill.</p>
+      </div>
+    </section>
 
-        <!-- Hosts -->
-        <div v-else-if="panel === 'hosts'">
-          <h2 class="text-[1.375rem] font-bold mb-1">ESXi</h2>
-          <p class="text-sm text-muted mb-4">Register standalone ESXi hypervisors or a vCenter Server.</p>
-          <div class="bg-card border border-border rounded-lg shadow-card transition-all duration-300 overflow-hidden">
-            <div class="flex items-center justify-between gap-3 py-3 px-5 border-b border-border bg-nav">
-              <span class="font-semibold text-sm">Registered hosts</span>
-              <button
-                type="button"
-                class="inline-flex items-center justify-center gap-1.5 rounded-md border-0 bg-brand px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-hover disabled:opacity-55"
-                @click="openAddHost"
-              >Add host</button>
+    <!-- Policies -->
+    <section v-else-if="panel === 'policies'" role="tabpanel" aria-label="Policies" class="bg-card border border-border rounded-lg shadow-card p-6 space-y-4">
+      <div class="flex flex-wrap justify-between items-center gap-3">
+        <h2 class="text-lg font-semibold m-0">Backup policies</h2>
+        <button v-if="auth.isOperator && !editing" type="button" class="inline-flex items-center justify-center gap-1.5 rounded-md border border-btn-sec-border bg-btn-sec px-3 py-2 text-sm font-medium text-btn-sec-text hover:bg-btn-sec-hover disabled:opacity-55 !text-brand !border-brand" @click="startEdit(null)">New policy</button>
+      </div>
+      <div class="rounded-md border border-border divide-y divide-border">
+        <div v-for="p in policies" :key="p.id" class="px-4 py-3.5">
+          <div v-if="editing?.id !== p.id" class="flex flex-wrap items-center gap-3">
+            <div class="flex-1 min-w-[16rem]">
+              <div class="text-sm font-semibold">{{ p.name }} <span class="font-normal text-muted">· {{ p.vm_count }} VM{{ p.vm_count === 1 ? '' : 's' }}</span></div>
+              <div class="text-xs text-muted mt-0.5">{{ p.summary }}</div>
             </div>
-            <div v-if="!hosts.length" class="p-8 text-center text-sm text-muted">No hosts configured.</div>
-            <div v-for="h in hosts" :key="h.id" class="flex justify-between items-center px-5 py-3 border-b border-border">
-              <div>
-                <div class="font-medium">{{ h.name }}</div>
-                <div class="text-xs font-mono text-brand">{{ h.host_ip }} · {{ h.connection_type || 'auto' }}</div>
-              </div>
-              <button
-                type="button"
-                class="inline-flex items-center justify-center p-1.5 rounded-md border border-border bg-transparent text-muted cursor-pointer transition-[color,background,border-color] duration-150 hover:text-red-400 hover:bg-red-500/8 hover:border-red-500/25"
-                title="Remove host"
-                @click="removeHost(h.id)"
-              >
-                <svg class="size-4 block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-              </button>
-            </div>
+            <template v-if="auth.isOperator && !editing">
+              <button type="button" class="inline-flex items-center justify-center gap-1.5 rounded-md border border-btn-sec-border bg-btn-sec px-3 py-2 text-sm font-medium text-btn-sec-text hover:bg-btn-sec-hover disabled:opacity-55 !py-1.5 !text-xs" @click="startEdit(p)">Edit</button>
+              <button v-if="!p.vm_count" type="button" class="inline-flex items-center justify-center gap-1.5 rounded-md border border-btn-sec-border bg-btn-sec px-3 py-2 text-sm font-medium text-btn-sec-text hover:bg-btn-sec-hover disabled:opacity-55 !py-1.5 !text-xs hover:!text-red-600" @click="deletePolicy(p)">Delete</button>
+            </template>
           </div>
+          <form v-else class="space-y-3" @submit.prevent="savePolicy"><PolicyFields v-model="editing" /><div class="flex gap-2"><button type="submit" class="inline-flex items-center justify-center gap-1.5 rounded-md border-0 bg-brand px-3 py-2 text-sm font-semibold text-white hover:bg-brand-hover disabled:opacity-55">Save</button><button type="button" class="inline-flex items-center justify-center gap-1.5 rounded-md border border-btn-sec-border bg-btn-sec px-3 py-2 text-sm font-medium text-btn-sec-text hover:bg-btn-sec-hover disabled:opacity-55" @click="editing = null">Cancel</button></div></form>
         </div>
+        <form v-if="editing && !editing.id" class="px-4 py-3.5 space-y-3" @submit.prevent="savePolicy">
+          <PolicyFields v-model="editing" />
+          <div class="flex gap-2"><button type="submit" class="inline-flex items-center justify-center gap-1.5 rounded-md border-0 bg-brand px-3 py-2 text-sm font-semibold text-white hover:bg-brand-hover disabled:opacity-55">Create policy</button><button type="button" class="inline-flex items-center justify-center gap-1.5 rounded-md border border-btn-sec-border bg-btn-sec px-3 py-2 text-sm font-medium text-btn-sec-text hover:bg-btn-sec-hover disabled:opacity-55" @click="editing = null">Cancel</button></div>
+        </form>
+      </div>
+      <p class="text-xs text-muted m-0">Backups are always incremental, with a full every {{ cfg.cbt_full_interval || 7 }}th run. VMs in a policy start {{ 5 }} minutes apart.</p>
+      <label class="flex flex-wrap items-center gap-3 pt-4 border-t border-border text-sm">
+        <span class="flex-1 min-w-[16rem]">Parallel backups<span class="block text-xs text-muted">How many VMs back up at the same time</span></span>
+        <input v-model.number="cfg.max_global_backups" type="number" min="1" max="32" class="w-20 py-2 px-2 text-sm text-center" :disabled="!auth.isAdmin" @change="saveParallel" />
+      </label>
+    </section>
 
-        <!-- Email -->
-        <div v-else-if="panel === 'email'">
-          <h2 class="text-[1.375rem] font-bold mb-1">Email (SMTP)</h2>
-          <p class="text-sm text-muted mb-4">Outbound alerts and notifications.</p>
-          <div class="bg-card border border-border rounded-lg shadow-card transition-all duration-300 p-5">
-            <div class="flex flex-wrap items-center gap-3 mb-4">
-              <span class="text-xs text-muted">Send a test message using the settings below.</span>
-              <button
-                type="button"
-                class="inline-flex items-center justify-center gap-1.5 rounded-md border border-btn-sec-border bg-btn-sec px-3 py-1.5 text-xs font-semibold text-btn-sec-text hover:bg-btn-sec-hover ml-auto"
-                @click="testEmail"
-              >Send test email</button>
-            </div>
-            <div class="grid grid-cols-2 gap-4">
-              <div class="col-span-2"><span class="block mb-1 text-xs font-semibold uppercase text-muted">SMTP server</span><input v-model="cfg.smtp_server" class="w-full py-2 px-3 font-mono text-sm mt-1" /></div>
-              <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">Port</span><input v-model.number="cfg.smtp_port" type="number" class="w-full py-2 px-3 text-center font-mono text-sm mt-1" /></div>
-              <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">Username</span><input v-model="cfg.smtp_user" class="w-full py-2 px-3 font-mono text-sm mt-1" /></div>
-              <div><span class="block mb-1 text-xs font-semibold uppercase text-muted">Password</span><input v-model="cfg.smtp_password" type="password" placeholder="(Unchanged)" class="w-full py-2 px-3 font-mono text-sm mt-1" /></div>
-              <div class="col-span-2"><span class="block mb-1 text-xs font-semibold uppercase text-muted">Default recipient</span><input v-model="cfg.smtp_to_email" type="email" class="w-full py-2 px-3 font-mono text-sm mt-1" /></div>
-              <label class="flex items-center gap-2 cursor-pointer col-span-2"><input v-model="cfg.smtp_use_tls" type="checkbox" /><span class="text-sm">Use STARTTLS (port 587)</span></label>
-              <label class="flex items-center gap-2 cursor-pointer col-span-2"><input v-model="cfg.smtp_use_ssl" type="checkbox" /><span class="text-sm">Use SSL/TLS (port 465)</span></label>
-            </div>
-            <div class="flex justify-end gap-2 mt-4">
-              <button
-                type="button"
-                class="inline-flex items-center justify-center gap-1.5 rounded-md border-0 bg-brand px-6 py-2 text-sm font-semibold text-white hover:bg-brand-hover disabled:opacity-55"
-                @click="saveEmail"
-              >Save email settings</button>
-            </div>
-          </div>
+    <!-- vCenter -->
+    <section v-else-if="panel === 'vcenter'" role="tabpanel" aria-label="vCenter" class="space-y-4">
+      <div class="bg-card border border-border rounded-lg shadow-card p-6 space-y-5">
+        <div class="flex flex-wrap justify-between items-center gap-3">
+          <h2 class="text-lg font-semibold m-0">vCenter</h2>
+          <button v-if="auth.isAdmin && !hosts.length" type="button" class="inline-flex items-center justify-center gap-1.5 rounded-md border-0 bg-brand px-3 py-2 text-sm font-semibold text-white hover:bg-brand-hover disabled:opacity-55" @click="openAddHost">Connect vCenter</button>
         </div>
+        <p v-if="!hosts.length" class="text-sm text-muted m-0">No vCenter connected. install.sh registers it; on a manual install, connect it here.</p>
+        <div v-for="h in hosts" :key="h.id" class="flex flex-wrap items-start gap-x-6 gap-y-3 text-sm">
+          <dl class="flex-1 grid gap-x-6 gap-y-4 grid-cols-[repeat(auto-fit,minmax(13rem,1fr))] m-0">
+            <div><dt class="text-xs text-muted mb-1">Address</dt><dd class="m-0 font-mono text-xs">{{ h.host_ip }}</dd></div>
+            <div><dt class="text-xs text-muted mb-1">Account</dt><dd class="m-0 font-mono text-xs">{{ h.username }}</dd></div>
+            <div><dt class="text-xs text-muted mb-1">Connection</dt><dd class="m-0">{{ reachable(h) }}</dd></div>
+            <div><dt class="text-xs text-muted mb-1">VDDK</dt><dd class="m-0">{{ vddkText }}</dd></div>
+          </dl>
+          <button v-if="auth.isAdmin" type="button" class="inline-flex items-center justify-center gap-1.5 rounded-md border border-btn-sec-border bg-btn-sec px-3 py-2 text-sm font-medium text-btn-sec-text hover:bg-btn-sec-hover disabled:opacity-55 !py-1.5 !text-xs hover:!text-red-600" @click="removeHost(h.id)">Disconnect</button>
+        </div>
+      </div>
+      <div class="bg-card border border-border rounded-lg shadow-card p-6">
+        <h3 class="text-sm font-semibold m-0">Never powered off</h3>
+        <p class="text-xs text-muted mt-1 mb-3">VMExec will not shut these down. They are backed up with the VM on.</p>
+        <div class="flex flex-wrap gap-2">
+          <span v-for="n in status?.never_powered_off || []" :key="n" class="text-xs px-2.5 py-1 rounded-full border border-border bg-nav">{{ n }}</span>
+          <span v-if="!(status?.never_powered_off || []).length" class="text-xs text-muted">None found</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Alerts -->
+    <section v-else-if="panel === 'alerts'" role="tabpanel" aria-label="Alerts" class="bg-card border border-border rounded-lg shadow-card p-6 space-y-4">
+      <h2 class="text-lg font-semibold m-0">Alerts</h2>
+      <form class="space-y-4" @submit.prevent="saveAlerts">
+        <label class="block text-sm">
+          Webhook URL
+          <span class="block text-xs text-muted mb-1.5">Discord, Slack or any HTTPS endpoint that accepts JSON.{{ cfg.alert_webhook_set ? ` Saved: ${cfg.alert_webhook_hint} (leave empty to keep it).` : '' }}</span>
+          <input v-model="webhook" type="url" inputmode="url" autocomplete="off" :placeholder="cfg.alert_webhook_set ? 'Saved — paste a new URL to replace it' : 'https://discord.com/api/webhooks/…'" class="w-full py-2 px-3 text-sm" :disabled="!auth.isAdmin" />
+        </label>
+        <fieldset class="border-0 m-0 p-0 flex flex-wrap gap-x-6 gap-y-1">
+          <legend class="text-sm mb-2">Send an alert when</legend>
+          <label class="inline-flex items-center gap-2 min-h-9 text-sm"><input v-model="cfg.alert_on_failure" type="checkbox" class="w-4 h-4 accent-brand" :disabled="!auth.isAdmin" /> A backup fails</label>
+          <label class="inline-flex items-center gap-2 min-h-9 text-sm"><input v-model="cfg.alert_on_missed" type="checkbox" class="w-4 h-4 accent-brand" :disabled="!auth.isAdmin" /> A scheduled backup is missed</label>
+          <label class="inline-flex items-center gap-2 min-h-9 text-sm"><input v-model="cfg.alert_on_storage" type="checkbox" class="w-4 h-4 accent-brand" :disabled="!auth.isAdmin" /> Backup storage is unhealthy</label>
+        </fieldset>
+        <div v-if="auth.isAdmin" class="flex flex-wrap gap-2">
+          <button type="submit" class="inline-flex items-center justify-center gap-1.5 rounded-md border-0 bg-brand px-3 py-2 text-sm font-semibold text-white hover:bg-brand-hover disabled:opacity-55">Save</button>
+          <button type="button" class="inline-flex items-center justify-center gap-1.5 rounded-md border border-btn-sec-border bg-btn-sec px-3 py-2 text-sm font-medium text-btn-sec-text hover:bg-btn-sec-hover disabled:opacity-55" @click="testWebhook">Send test</button>
+          <button v-if="cfg.alert_webhook_set" type="button" class="inline-flex items-center justify-center gap-1.5 rounded-md border border-btn-sec-border bg-btn-sec px-3 py-2 text-sm font-medium text-btn-sec-text hover:bg-btn-sec-hover disabled:opacity-55 hover:!text-red-600" @click="clearWebhook">Remove webhook</button>
+        </div>
+      </form>
+    </section>
 
         <!-- Users -->
         <div v-else-if="panel === 'users' && auth.isAdmin">
@@ -332,7 +190,7 @@
         </div>
 
         <!-- Syslogs -->
-        <div v-else-if="panel === 'syslogs'">
+        <div v-else-if="panel === 'logs'">
           <div class="flex items-center justify-between gap-3 mb-4">
             <h2 class="text-[1.375rem] font-bold m-0">System Logs</h2>
             <button
@@ -352,13 +210,11 @@
             </div>
           </div>
         </div>
-      </div>
-    </div>
 
     <!-- Add host modal -->
     <FormModal
       :open="showAddHost"
-      :title="hostAddResult ? (hostAddResult.vddk_installed ? 'Host added — VDDK ready' : 'Host added — VDDK setup') : 'Add ESXi / vCenter host'"
+      :title="hostAddResult ? (hostAddResult.vddk_installed ? 'vCenter connected — VDDK ready' : 'vCenter connected — VDDK setup') : 'Connect vCenter'"
       :subtitle="hostAddResult ? '' : 'VMExec verifies the connection and detects standalone ESXi vs vCenter.'"
       :busy="hostAddBusy"
       @close="closeAddHost"
@@ -439,7 +295,7 @@
             class="inline-flex items-center justify-center gap-1.5 rounded-md border-0 bg-brand px-4 py-2 text-sm font-semibold text-white hover:bg-brand-hover disabled:opacity-55"
             :disabled="hostAddBusy"
             @click="submitAddHost"
-          >{{ hostAddBusy ? 'Adding…' : 'Add host' }}</button>
+          >{{ hostAddBusy ? 'Connecting…' : 'Connect' }}</button>
         </template>
       </template>
     </FormModal>
@@ -504,23 +360,30 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { configApi, hostsApi, usersApi, logsApi } from '@/api/client'
+import { configApi, hostsApi, usersApi, logsApi, statusApi, policiesApi, alertsApi } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
-import { useSetupWizard } from '@/composables/useSetupWizard'
 import { useModal } from '@/composables/useModal'
 import FormModal from '@/components/FormModal.vue'
+import PolicyFields from '@/components/PolicyFields.vue'
 
 const props = defineProps({ panel: { type: String, default: 'storage' } })
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
-const { open: openWizard } = useSetupWizard()
 const { confirm, alert } = useModal()
 
-const panel = computed(() => props.panel || route.params.panel || 'storage')
-const cfg = ref({ secondary_storage_type: 'NFS' })
+const ALIASES = { hosts: 'vcenter', syslogs: 'logs', engine: 'policies', email: 'alerts' }
+const panel = computed(() => {
+  const p = props.panel || route.params.panel || 'storage'
+  return ALIASES[p] || p
+})
+const cfg = ref({})
 const hosts = ref([])
 const users = ref([])
+const policies = ref([])
+const status = ref(null)
+const editing = ref(null)
+const webhook = ref('')
 const logs = ref({ service_log: '', worker_log: '' })
 const msg = ref('')
 const msgOk = ref(true)
@@ -549,48 +412,107 @@ let hostProgressTimer = null
 const panels = computed(() => {
   const all = [
     { id: 'storage', label: 'Storage' },
-    { id: 'hosts', label: 'ESXi' },
-    { id: 'engine', label: 'Engine' },
-    { id: 'email', label: 'SMTP' },
+    { id: 'policies', label: 'Policies' },
+    { id: 'vcenter', label: 'vCenter' },
+    { id: 'alerts', label: 'Alerts' },
     { id: 'users', label: 'Users' },
-    { id: 'syslogs', label: 'System Logs' },
+    { id: 'logs', label: 'Logs' },
   ]
-  if (!auth.isAdmin) return all.filter((p) => p.id === 'syslogs')
+  if (!auth.isAdmin) return all.filter((p) => !['users', 'alerts'].includes(p.id))
   return all
 })
 
-function go(id) { router.push(`/settings/${id}`) }
+function go(id) {
+  msg.value = ''
+  editing.value = null
+  router.push(`/settings/${id}`)
+}
+
+const vddkText = computed(() => {
+  const vddk = (status.value?.problems || []).find((p) => p.kind === 'vddk')
+  return vddk ? 'Not installed' : 'Installed'
+})
+
+function reachable(h) {
+  const vc = (status.value?.vcenters || []).find((v) => v.address === h.host_ip)
+  if (!vc) return 'Checking…'
+  return vc.reachable ? 'Connected' : 'Not reachable'
+}
 
 async function load() {
+  const jobs = [statusApi.get().then((s) => { status.value = s }).catch(() => {})]
   if (auth.isAdmin) {
-    cfg.value = await configApi.get()
-    if (!cfg.value.secondary_storage_type) cfg.value.secondary_storage_type = 'NFS'
-    hosts.value = await hostsApi.list()
-    if (panel.value === 'users') users.value = await usersApi.list()
+    jobs.push(configApi.get().then((c) => { cfg.value = c }))
+    jobs.push(hostsApi.list().then((h) => { hosts.value = h }))
+    if (panel.value === 'users') jobs.push(usersApi.list().then((u) => { users.value = u }))
   }
-  if (panel.value === 'syslogs') {
-    logs.value = await logsApi.system({ service_lines: 100, worker_lines: 100 })
+  if (panel.value === 'policies') jobs.push(policiesApi.list().then((p) => { policies.value = p }))
+  if (panel.value === 'logs') jobs.push(logsApi.system({ service_lines: 100, worker_lines: 100 }).then((l) => { logs.value = l }))
+  await Promise.all(jobs)
+}
+
+function startEdit(p) {
+  msg.value = ''
+  editing.value = p
+    ? { id: p.id, name: p.name, frequency: p.frequency, days: p.days, hour: p.hour, minute: p.minute, keep_daily: p.keep_daily, keep_weekly: p.keep_weekly, keep_monthly: p.keep_monthly }
+    : { id: null, name: '', frequency: 'daily', days: '0,1,2,3,4,5,6', hour: 2, minute: 0, keep_daily: 7, keep_weekly: 4, keep_monthly: 6 }
+}
+
+async function savePolicy() {
+  const { id, ...body } = editing.value
+  try {
+    if (id) await policiesApi.update(id, body)
+    else await policiesApi.create(body)
+    editing.value = null
+    policies.value = await policiesApi.list()
+    msg.value = id ? 'Policy saved. Its VMs were rescheduled.' : 'Policy created.'
+    msgOk.value = true
+  } catch (e) {
+    msg.value = e.message; msgOk.value = false
   }
 }
 
-async function saveStorage() {
-  await configApi.updateStorage(cfg.value)
-  msg.value = 'Saved.'; msgOk.value = true
+async function deletePolicy(p) {
+  if (!await confirm(`Delete the ${p.name} policy?`, { title: 'Delete policy', confirmText: 'Delete', danger: true })) return
+  try {
+    await policiesApi.remove(p.id)
+    policies.value = await policiesApi.list()
+  } catch (e) {
+    msg.value = e.message; msgOk.value = false
+  }
 }
 
-async function saveEmail() {
-  await configApi.update(cfg.value)
-  msg.value = 'Email settings saved.'; msgOk.value = true
+async function saveParallel() {
+  const n = Math.max(1, Math.min(32, Number(cfg.value.max_global_backups) || 1))
+  cfg.value = await configApi.update({ max_global_backups: n })
+  msg.value = `Up to ${n} backups run at the same time.`; msgOk.value = true
 }
 
-async function testStorage() {
-  const r = await configApi.testStorage()
+async function saveAlerts() {
+  const body = {
+    alert_on_failure: !!cfg.value.alert_on_failure,
+    alert_on_missed: !!cfg.value.alert_on_missed,
+    alert_on_storage: !!cfg.value.alert_on_storage,
+  }
+  if (webhook.value.trim()) body.alert_webhook_url = webhook.value.trim()
+  try {
+    cfg.value = await configApi.update(body)
+    webhook.value = ''
+    msg.value = 'Alerts saved.'; msgOk.value = true
+  } catch (e) {
+    msg.value = e.message; msgOk.value = false
+  }
+}
+
+async function testWebhook() {
+  const r = await alertsApi.test(webhook.value.trim() || null)
   msg.value = r.message; msgOk.value = r.ok
 }
 
-async function testEmail() {
-  const r = await configApi.testEmail()
-  msg.value = r.message; msgOk.value = r.ok
+async function clearWebhook() {
+  if (!await confirm('Remove the webhook? No alerts will be sent.', { title: 'Remove webhook', confirmText: 'Remove', danger: true })) return
+  cfg.value = await configApi.update({ alert_webhook_url: '' })
+  msg.value = 'Webhook removed.'; msgOk.value = true
 }
 
 function startHostProgress() {
@@ -690,7 +612,7 @@ async function submitAddUser() {
 }
 
 async function removeHost(id) {
-  if (!await confirm('Remove this host?', { title: 'Remove host', confirmText: 'Remove', danger: true })) return
+  if (!await confirm('Disconnect this vCenter? Backups of its VMs stop until it is connected again.', { title: 'Disconnect vCenter', confirmText: 'Disconnect', danger: true })) return
   await hostsApi.remove(id)
   hosts.value = await hostsApi.list()
 }

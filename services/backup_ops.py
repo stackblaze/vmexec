@@ -80,6 +80,30 @@ def config_to_dict(config):
     }
 
 
+def restore_point_counts(config, vm_names):
+    """{vm_name: number of restore points} from each VM's chain index.
+
+    Local-path repositories only (ZeroFS/NFS: one small file read per VM);
+    an S3 repository would need a request per VM, so it reports nothing.
+    """
+    out = {}
+    if not config or config.storage_type != "NFS" or not vm_names:
+        return out
+    try:
+        import storage_util
+        from backup_manifest import load_chain
+        storage = storage_util.get_storage(config)
+        for name in vm_names:
+            try:
+                chain = load_chain(storage, name)
+                out[name] = len(chain.get("points", [])) if chain else 0
+            except Exception:  # noqa: BLE001 - one unreadable chain must not break the list
+                continue
+    except Exception:  # noqa: BLE001
+        return {}
+    return out
+
+
 def _webhook_hint(url):
     from services.alert_ops import webhook_hint
     return webhook_hint(url)
