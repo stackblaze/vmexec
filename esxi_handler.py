@@ -149,10 +149,20 @@ def get_all_vms(si):
             "uuid": child.summary.config.uuid,
             "cpu_count": child.summary.config.numCpu if child.summary.config else 0,
             "memory_mb": child.summary.config.memorySizeMB if child.summary.config else 0,
-            "storage_gb": round(child.summary.storage.committed / (1024**3), 2) if child.summary.storage else 0.0
+            "storage_gb": round(child.summary.storage.committed / (1024**3), 2) if child.summary.storage else 0.0,
+            # The ESXi host the VM runs on: the per-host backup limit counts
+            # these, not the (single) vCenter registration.
+            "runtime_host": _runtime_host_name(child),
         })
     
     return vm_list
+
+def _runtime_host_name(vm):
+    try:
+        h = vm.summary.runtime.host
+        return h.name if h is not None else ""
+    except Exception:  # noqa: BLE001 - informational only
+        return ""
 
 def get_datastores(si):
     """

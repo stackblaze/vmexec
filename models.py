@@ -160,6 +160,7 @@ class VM(Base):
     speed_mbps = Column(Float, default=0.0)  # Last known transfer speed
     power_off_for_backup = Column(Boolean, default=False)  # Shutdown VM before backup for faster direct-stream path
     cbt_enabled = Column(Boolean, default=True)  # Per-VM CBT; None would inherit config — use True default
+    runtime_host = Column(String, default="")  # ESXi host it runs on (per-host backup limit)
     policy_id = Column(Integer, ForeignKey("policies.id"), nullable=True)  # None = not protected
     policy = relationship("BackupPolicy", back_populates="vms")
 
@@ -286,6 +287,7 @@ def init_db():
             ("last_secondary_copy_status", "ALTER TABLE vms ADD COLUMN last_secondary_copy_status VARCHAR DEFAULT 'none'"),
             ("last_backup_duration", "ALTER TABLE vms ADD COLUMN last_backup_duration INTEGER DEFAULT 0"),
             ("policy_id", "ALTER TABLE vms ADD COLUMN policy_id INTEGER REFERENCES policies(id)"),
+            ("runtime_host", "ALTER TABLE vms ADD COLUMN runtime_host VARCHAR DEFAULT ''"),
             ("alert_webhook_url", "ALTER TABLE config ADD COLUMN alert_webhook_url VARCHAR DEFAULT ''"),
             ("alert_on_failure", "ALTER TABLE config ADD COLUMN alert_on_failure BOOLEAN DEFAULT 1"),
             ("alert_on_missed", "ALTER TABLE config ADD COLUMN alert_on_missed BOOLEAN DEFAULT 1"),

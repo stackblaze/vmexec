@@ -213,6 +213,24 @@ def _ensure_concurrency_configured():
             db.close()
 
 
+_vm_slot_key = {}  # vm_id -> slot key taken in queue_backup (released with the same key)
+
+
+def slot_key(vm):
+    """What the per-host limit counts: the ESXi host the VM runs on.
+
+    A vCenter is ONE registration for all its hosts, so keying by the
+    registration capped every backup in the datacenter at the per-host limit
+    (2). Standalone ESXi registrations (no runtime_host) keep their own key.
+    """
+    rh = (getattr(vm, "runtime_host", "") or "").strip()
+    return f"{vm.esxi_host_id}:{rh}" if rh else vm.esxi_host_id
+
+
+def _release_vm_slot(vm_id, fallback_key):
+    _release_and_drain(_vm_slot_key.pop(vm_id, fallback_key))
+
+
 def _try_acquire_slots(host_id):
     global _global_active
     _ensure_concurrency_configured()
@@ -320,7 +338,7 @@ def queue_backup(vm_id: int):
         db.close()
         return
 
-    host_id = vm.esxi_host_id
+    host_id = slot_key(vm)
     acquired, reason = _try_acquire_slots(host_id)
     if not acquired:
         status = WAIT_HOST if reason == "host" else WAIT_GLOBAL
@@ -333,6 +351,7 @@ def queue_backup(vm_id: int):
         return
 
     log_info(f"[PID {pid}] Queueing backup for VM: {vm.vm_name}")
+    _vm_slot_key[vm_id] = host_id
     last_trigger_times[vm_id] = now
     vm.current_action = "Queued..."
     vm.progress = 0
@@ -435,7 +454,7 @@ def perform_backup(vm_id: int):
     if not config or not vm or not vm.esxi_host:
         log_error(f"[PID {pid}] perform_backup aborted: Missing config/vm/host for ID {vm_id}")
         if vm and vm.esxi_host_id:
-            _release_and_drain(vm.esxi_host_id)
+            _release_vm_slot(vm_id, slot_key(vm))
         db.close()
         return
 
@@ -461,7 +480,7 @@ def perform_backup(vm_id: int):
             vm.last_status = "Failed"
             db.commit()
             db.close()
-            _release_and_drain(host_id)
+            _release_vm_slot(vm_id, host_id)
             return
 
     # SMB Authentication (only relevant for SMB storage type)
@@ -478,8 +497,19 @@ def perform_backup(vm_id: int):
         vm.last_status = "Failed"
         db.commit()
         db.close()
-        _release_and_drain(host_id)
+        _release_vm_slot(vm_id, host_id)
         return
+
+    # Keep the VM's ESXi host current (DRS moves VMs): the per-host limit of
+    # the next run counts the right host.
+    try:
+        _obj = vsphere_context.find_vm_by_name(si, vm.vm_name)
+        _rh = _obj.runtime.host.name if _obj is not None and _obj.runtime.host is not None else ""
+        if _rh and _rh != (vm.runtime_host or ""):
+            vm.runtime_host = _rh
+            db.commit()
+    except Exception as _e:  # noqa: BLE001 - informational only
+        log_debug(f"[PID {pid}] runtime host lookup for {vm.vm_name}: {_e}")
 
     powered_off_by_us = False  # Track if we shut down the VM so we can restore it
     backup_start_time = datetime.datetime.now()
@@ -803,7 +833,7 @@ def perform_backup(vm_id: int):
             _time_limit_stopped.discard(vm_id)
         esxi_handler.Disconnect(si)
         db.close()
-        _release_and_drain(host_id)
+        _release_vm_slot(vm_id, host_id)
 
 
 

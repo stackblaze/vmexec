@@ -378,6 +378,7 @@ def sync_vms_for_host(db, host_id):
                 memory_mb=vm_data.get("memory_mb", 0),
                 storage_gb=vm_data.get("storage_gb", 0.0),
                 power_state=vm_data.get("power_state", "Unknown"),
+                runtime_host=vm_data.get("runtime_host", ""),
             )
             db.add(new_vm)
             synced.append(vm_data["name"])
@@ -387,6 +388,7 @@ def sync_vms_for_host(db, host_id):
             vm.memory_mb = vm_data.get("memory_mb", 0)
             vm.storage_gb = vm_data.get("storage_gb", 0.0)
             vm.power_state = vm_data.get("power_state", "Unknown")
+            vm.runtime_host = vm_data.get("runtime_host", "") or vm.runtime_host
             if vm.esxi_host_id != host.id:
                 vm.esxi_host_id = host.id
 
