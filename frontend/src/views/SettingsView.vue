@@ -1,5 +1,5 @@
 <template>
-  <div class="max-w-4xl">
+  <div>
     <h1 class="text-2xl font-bold mb-1">Settings</h1>
     <p class="text-sm text-muted mb-5">Storage, vCenter and VDDK are set up by install.sh. Policies and alerts are edited here.</p>
 
