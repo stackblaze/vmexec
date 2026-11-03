@@ -678,6 +678,18 @@ def jobs_progress(db: Session = Depends(get_db), user: User = Depends(get_api_us
     return backup_ops.job_progress(db)
 
 
+@router.get("/status")
+def get_status(db: Session = Depends(get_db), user: User = Depends(get_api_user)):
+    """Backup page strip and banner: last 24 h, next run, storage, problems."""
+    from services import status_ops
+    from services.vddk_install import is_vddk_installed
+    return status_ops.get_status(
+        db,
+        scheduler_paused=backup_ops.is_scheduler_paused(db),
+        vddk_installed=is_vddk_installed(),
+    )
+
+
 @router.get("/overview", response_model=OverviewResponse)
 def overview(db: Session = Depends(get_db), user: User = Depends(get_api_user)):
     return OverviewResponse(**backup_ops.get_overview(db))

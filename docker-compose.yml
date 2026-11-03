@@ -13,6 +13,8 @@ services:
       # Persistent data: SQLite DB, TLS cert, credential encryption key, logs.
       - novabak_data:/app/data
       - ${VMEXEC_BACKUP_DIR:-/mnt/backups}:/mnt/backups
+      # ZeroFS cache disk, read-only: the Storage tab shows how full it is.
+      - ${VMEXEC_ZEROFS_CACHE_DIR:-/var/lib/zerofs}:/host/zerofs-cache:ro
       # VDDK tarball, supplied by the operator: proprietary and not
       # redistributable, so it is never in the image. See scripts/install-vddk.sh.
       - ./vendor/vddk:/app/vendor/vddk:ro
@@ -21,6 +23,10 @@ services:
       - LOG_FILE=service.log
       # VMs never powered off for backup (routers, this appliance); see power_guard.py
       - VMEXEC_PROTECTED_VMS=${VMEXEC_PROTECTED_VMS:-}
+      # Shown on the Storage tab (set by install.sh)
+      - VMEXEC_REPO_LOCATION=${VMEXEC_REPO_LOCATION:-}
+      - VMEXEC_REPO_ENCRYPTED=${VMEXEC_REPO_ENCRYPTED:-}
+      - VMEXEC_ZEROFS_CACHE_LIMIT_GB=${VMEXEC_ZEROFS_CACHE_LIMIT_GB:-}
     command: python -u main.py
 
   # ─── Background Worker Daemon ─────────────────────────────────────────────
@@ -34,12 +40,18 @@ services:
       # Same data volume — shared DB between web and worker
       - novabak_data:/app/data
       - ${VMEXEC_BACKUP_DIR:-/mnt/backups}:/mnt/backups
+      # ZeroFS cache disk, read-only: the Storage tab shows how full it is.
+      - ${VMEXEC_ZEROFS_CACHE_DIR:-/var/lib/zerofs}:/host/zerofs-cache:ro
       - ./vendor/vddk:/app/vendor/vddk:ro
     environment:
       - DATA_DIR=/app/data
       - LOG_FILE=worker.log
       # VMs never powered off for backup (routers, this appliance); see power_guard.py
       - VMEXEC_PROTECTED_VMS=${VMEXEC_PROTECTED_VMS:-}
+      # Shown on the Storage tab (set by install.sh)
+      - VMEXEC_REPO_LOCATION=${VMEXEC_REPO_LOCATION:-}
+      - VMEXEC_REPO_ENCRYPTED=${VMEXEC_REPO_ENCRYPTED:-}
+      - VMEXEC_ZEROFS_CACHE_LIMIT_GB=${VMEXEC_ZEROFS_CACHE_LIMIT_GB:-}
     command: python -u worker_daemon.py
 
 volumes:

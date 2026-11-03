@@ -446,6 +446,24 @@ def perform_backup(vm_id: int):
 
     storage = storage_util.get_storage(config)
 
+    # A local-path repository must be its own mount (ZeroFS on the appliance).
+    # If it is not mounted, the path is just a folder on the root disk and
+    # backups would fill the appliance's own disk. VMEXEC_ALLOW_LOCAL_REPO=1
+    # opts out (a deliberately local folder).
+    if config.storage_type == "NFS" and os.environ.get("VMEXEC_ALLOW_LOCAL_REPO") != "1":
+        from services.status_ops import repo_mount_problem
+        problem = repo_mount_problem(config.nfs_path or "/mnt/backups")
+        if problem:
+            log_error(f"[PID {pid}] {vm.vm_name}: {problem}")
+            db.add(BackupLog(vm_name=vm.vm_name, status="Failed", message=f"Backup storage not available: {problem}"))
+            vm.current_action = ""
+            vm.progress = 0
+            vm.last_status = "Failed"
+            db.commit()
+            db.close()
+            _release_and_drain(host_id)
+            return
+
     # SMB Authentication (only relevant for SMB storage type)
     if config.storage_type == "SMB":
         authenticate_smb(config)
