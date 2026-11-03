@@ -11,6 +11,7 @@ import os
 import shutil
 import socket
 import ssl
+import struct
 import subprocess
 import sys
 import tempfile
@@ -290,6 +291,143 @@ def _resolve_local_dest(storage, dest_rel_path):
     if os.path.isdir(base.rstrip("/")):
         return os.path.join(base.rstrip("/"), dest_rel_path), None
     return None, f"Cannot resolve local path for storage base: {base}"
+
+
+def stream_snapshot_areas(
+    si,
+    vm,
+    snap_obj,
+    disk,
+    areas,
+    server_host,
+    host_user,
+    host_password,
+    storage,
+    dest_rel_path,
+    config=None,
+    connection_type=vsphere_context.CONN_AUTO,
+    is_cancelled_func=None,
+    progress_callback=None,
+    progress_base=0,
+    progress_total=100,
+    speed_callback=None,
+):
+    """Full backup of one disk, reading only the areas in use.
+
+    areas: (start, length) from QueryChangedDiskAreas(changeId="*"). The
+    destination is a sparse file of the disk's capacity: unused space stays
+    a hole, so nothing is read, sent or stored for it (a full used to read
+    every provisioned byte: vCenter, 586 GB of disks holding 73 GB, took
+    39 minutes). Data streams from the reader to the file, never held in
+    memory. Returns bytes written.
+    """
+    import json
+
+    if not is_available(config):
+        raise VddkNotAvailableError(availability_message(config))
+    ensure_vddk_runtime_dirs()
+    dest_path, err = _resolve_local_dest(storage, dest_rel_path)
+    if err:
+        raise VddkNotAvailableError(err)
+    capacity = int(disk["capacity_bytes"])
+    filtered = sorted((int(s), int(l)) for s, l in areas if int(l) > 0)
+    total = sum(l for _, l in filtered) or 1
+    conn_type = vsphere_context.resolve_connection_type(si, connection_type)
+    candidates = vsphere_context.vddk_disk_open_candidates(disk, conn_type)
+    os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
+
+    last_err = None
+    for disk_ds_path in candidates:
+        pw_path = script_path = areas_path = sock = err_path = None
+        proc = reader = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", delete=False, prefix="vddk_pw_") as pw_file:
+                pw_file.write(host_password)
+                pw_path = pw_file.name
+            cmd, _ = vsphere_context.build_nbdkit_vddk_cmd(
+                si=si, vm=vm, snap_obj=snap_obj, disk_ds_path=disk_ds_path,
+                server_host=server_host, user=host_user, password_file=pw_path,
+                thumbprint=get_server_thumbprint(server_host), libdir=get_vddk_libdir(config),
+                stored_type=connection_type,
+            )
+            sock = os.path.join(tempfile.gettempdir(), f"nbdkit_full_{os.getpid()}_{int(time.time() * 1000)}.sock")
+            # -f: stay in the foreground so stopping this process stops the server.
+            run_cmd = [cmd[0], "-f"] + cmd[1:-1] + ["-U", sock, cmd[-1]]
+            log_info(f"[NBD] Full backup of used areas only: disk={disk_ds_path} areas={len(filtered)} "
+                     f"bytes={total} of {capacity}")
+            err_fd, err_path = tempfile.mkstemp(prefix="nbdkit_err_")
+            proc = subprocess.Popen(run_cmd, stdout=subprocess.DEVNULL, stderr=err_fd)
+            os.close(err_fd)
+            _wait_for_unix_socket(sock, proc, err_path)
+            with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".py") as sf:
+                sf.write(_EXTENT_READER_SRC)
+                script_path = sf.name
+            with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as af:
+                json.dump(filtered, af)
+                areas_path = af.name
+
+            reader = subprocess.Popen([_python313(), script_path, sock, areas_path],
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            written = 0
+            t0 = last_t = time.time()
+            last_b = 0
+            with open(dest_path, "wb") as out:
+                out.truncate(capacity)  # sparse: unused areas stay holes
+                src = reader.stdout
+                while True:
+                    if is_cancelled_func and is_cancelled_func():
+                        raise RuntimeError("Backup cancelled by user")
+                    hdr = src.read(16)
+                    if not hdr:
+                        break
+                    if len(hdr) < 16:
+                        raise RuntimeError("truncated frame header from extent reader")
+                    off, length = struct.unpack(">QQ", hdr)
+                    data = src.read(length)
+                    if len(data) != length:
+                        raise RuntimeError("truncated frame data from extent reader")
+                    out.seek(off)
+                    out.write(data)
+                    written += length
+                    now = time.time()
+                    if progress_callback:
+                        progress_callback(progress_base + int(progress_total * written / total))
+                    if speed_callback and now - last_t >= 2:
+                        speed_callback(round((written - last_b) / (now - last_t) / 1e6, 1))
+                        last_t, last_b = now, written
+                out.flush()
+                os.fsync(out.fileno())
+            rerr = reader.stderr.read()
+            reader.wait(timeout=60)
+            if reader.returncode != 0:
+                raise RuntimeError((rerr or b"").decode("utf-8", errors="replace")[-800:]
+                                   or f"extent reader exit {reader.returncode}")
+            if written != sum(l for _, l in filtered):
+                raise RuntimeError(f"byte mismatch: expected {sum(l for _, l in filtered)}, wrote {written}")
+            secs = max(time.time() - t0, 0.001)
+            log_info(f"[NBD] Full (used areas): {written / 1e9:.2f} GB in {secs:.0f} s "
+                     f"({written / secs / 1e6:.0f} MB/s), {capacity / 1e9:.1f} GB disk")
+            return written
+        except Exception as e:
+            last_err = e
+            if is_cancelled_func and is_cancelled_func():
+                raise
+            log_warn(f"[NBD] Used-areas full backup failed for {disk_ds_path}: {str(e)[:300]}")
+        finally:
+            for p_ in (reader, proc):
+                if p_ and p_.poll() is None:
+                    p_.kill()
+                    try:
+                        p_.wait(timeout=10)
+                    except Exception:
+                        pass
+            for path in (pw_path, script_path, areas_path, sock, err_path):
+                if path:
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        pass
+    raise RuntimeError(last_err or "used-areas full backup failed for all disk candidates")
 
 
 def stream_snapshot_disk(

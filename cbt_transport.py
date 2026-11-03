@@ -186,10 +186,35 @@ def export_cbt_backup(
                         )
 
                     nfc_ok = vsphere_context.supports_nfc_export(si, connection_type)
-                    if not vddk_transport.is_available(config) and nfc_ok:
-                        # VDDK not installed: NFC is the normal transport,
-                        # not a degraded fallback — dispatch directly, no
-                        # warning per disk.
+                    # Only the areas in use (QueryChangedDiskAreas "*"):
+                    # unused space is never read or stored. Any problem
+                    # (no CBT on the disk, a query error, a read error)
+                    # falls back to reading the whole disk below.
+                    used_done = False
+                    if change_id and vddk_transport.is_available(config):
+                        try:
+                            used = cbt_core.query_changed_areas(vm, snap_obj, device_key, "*", capacity)
+                            if used:
+                                vddk_transport.stream_snapshot_areas(
+                                    si, vm, snap_obj, disk, used,
+                                    host_ip, host_user, host_password,
+                                    storage, flat_rel, config=config,
+                                    connection_type=connection_type,
+                                    is_cancelled_func=is_cancelled_func,
+                                    progress_callback=progress_callback,
+                                    progress_base=step_base + 2,
+                                    progress_total=max(step_end - step_base - 2, 1),
+                                    speed_callback=speed_callback,
+                                )
+                                used_done = True
+                        except Exception as used_err:
+                            if is_cancelled_func and is_cancelled_func():
+                                raise
+                            log_warn(f"[CBT] Used-areas full failed ({str(used_err)[:200]}); "
+                                     "reading the whole disk")
+                    if used_done:
+                        pass
+                    elif not vddk_transport.is_available(config) and nfc_ok:
                         log_info(
                             f"[CBT] VDDK not installed; streaming full disk "
                             f"via NFC ExportSnapshot"
