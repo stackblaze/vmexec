@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 
 from logger_util import log_info, log_warn, log_error
 import vsphere_context
@@ -350,7 +351,7 @@ def stream_snapshot_areas(
                 thumbprint=get_server_thumbprint(server_host), libdir=get_vddk_libdir(config),
                 stored_type=connection_type,
             )
-            sock = os.path.join(tempfile.gettempdir(), f"nbdkit_full_{os.getpid()}_{int(time.time() * 1000)}.sock")
+            sock = os.path.join(tempfile.gettempdir(), f"nbdkit_full_{os.getpid()}_{uuid.uuid4().hex[:12]}.sock")
             # -f: stay in the foreground so stopping this process stops the server.
             run_cmd = [cmd[0], "-f"] + cmd[1:-1] + ["-U", sock, cmd[-1]]
             log_info(f"[NBD] Full backup of used areas only: disk={disk_ds_path} areas={len(filtered)} "
@@ -767,7 +768,7 @@ def read_snapshot_extents(
             # Serve on a UNIX socket instead of --run; disk path is the last arg.
             sock = os.path.join(
                 tempfile.gettempdir(),
-                f"nbdkit_ext_{os.getpid()}_{int(time.time() * 1000)}.sock",
+                f"nbdkit_ext_{os.getpid()}_{uuid.uuid4().hex[:12]}.sock",  # unique per thread
             )
             run_cmd = cmd[:-1] + ["-U", sock, cmd[-1]]
             log_info(

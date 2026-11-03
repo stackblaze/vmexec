@@ -26,6 +26,7 @@ import struct
 import subprocess
 import tempfile
 import time
+import uuid
 
 from pyVmomi import vim
 
@@ -157,7 +158,7 @@ def _start_nbdkit(si, vm, disk_ds_path, server_host, user, pw_path, config):
     """nbdkit VDDK, read-write, no snapshot, on a UNIX socket. Returns (proc, sock, err_path)."""
     from vddk_transport import _wait_for_unix_socket, get_server_thumbprint, get_vddk_libdir, ensure_vddk_runtime_dirs
     ensure_vddk_runtime_dirs()
-    sock = os.path.join(tempfile.gettempdir(), f"nbdkit_restore_{os.getpid()}_{int(time.time() * 1000)}.sock")
+    sock = os.path.join(tempfile.gettempdir(), f"nbdkit_restore_{os.getpid()}_{uuid.uuid4().hex[:12]}.sock")
     # -f: stay in the foreground. Without it nbdkit forks, the server keeps
     # running after we "stop" the parent, and holds the disk open.
     cmd = [

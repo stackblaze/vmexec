@@ -6,6 +6,8 @@ import datetime
 import os
 import shutil
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import backup_manifest as bm
 import cbt_core
@@ -17,6 +19,17 @@ from logger_util import log_info, log_warn, log_error
 def cbt_supported_storage(storage):
     base = storage.get_base_path() if storage else ""
     return not str(base).startswith("s3://")
+
+
+class _DisksCancelled(Exception):
+    """A disk worker saw the user's cancel."""
+
+
+def _parallel_disks():
+    try:
+        return max(1, min(16, int(os.environ.get("VMEXEC_PARALLEL_DISKS", "4"))))
+    except ValueError:
+        return 4
 
 
 def plan_backup_dest(vm_name, use_cbt):
@@ -129,9 +142,9 @@ def export_cbt_backup(
         total_disks = len(disks)
         progress_bands = _disk_progress_bands(disks)
 
-        for idx, disk in enumerate(disks):
+        def _do_disk(idx, disk, progress_callback, speed_callback):
             if is_cancelled_func and is_cancelled_func():
-                return False, "Backup cancelled by user", None
+                raise _DisksCancelled()
 
             disk_basename = os.path.basename(disk["rel_path"])
             flat_basename = disk_basename.replace(".vmdk", "-flat.vmdk")
@@ -249,7 +262,7 @@ def export_cbt_backup(
                                 _stream_full_nfc()
                             else:
                                 raise
-                disk_manifest_entries.append(bm.build_disk_entry(
+                entry = (bm.build_disk_entry(
                     device_key, disk_basename, flat_basename, capacity,
                     change_id, "full",
                 ))
@@ -260,8 +273,8 @@ def export_cbt_backup(
                     if comp_level > 0:
                         flat_rel = compress_storage_file(storage, flat_rel, comp_level)
                         if flat_rel.endswith(".gz"):
-                            disk_manifest_entries[-1]["flat_basename"] = flat_basename + ".gz"
-                            disk_manifest_entries[-1]["storage_flat"] = flat_rel.split("/")[-1]
+                            entry["flat_basename"] = flat_basename + ".gz"
+                            entry["storage_flat"] = flat_rel.split("/")[-1]
             else:
                 prev_disk = _find_prev_disk_entry(storage, vm_name, parent_id, device_key)
                 prev_change_id = prev_disk.get("change_id") if prev_disk else "*"
@@ -284,12 +297,48 @@ def export_cbt_backup(
                     progress_total=max(step_end - step_base - 2, 1),
                 )
                 _write_delta_storage(storage, delta_rel, extents, config)
-                disk_manifest_entries.append(bm.build_disk_entry(
+                entry = (bm.build_disk_entry(
                     device_key, disk_basename, flat_basename, capacity,
                     change_id, "incremental", delta_file=delta_name,
                 ))
                 if progress_callback:
                     progress_callback(step_end)
+            return entry
+
+        # Disks run in parallel (VMEXEC_PARALLEL_DISKS, default 4): each has
+        # its own nbdkit/VDDK session. Progress is combined by capacity and
+        # the callbacks (which write the job row) are serialised.
+        parallel = max(1, min(_parallel_disks(), total_disks))
+        caps = [max(int(d.get("capacity_bytes") or 0), 1) for d in disks]
+        done = [0.0] * total_disks
+        speeds = [0.0] * total_disks
+        cb_lock = threading.Lock()
+
+        def _disk_callbacks(i):
+            base, end = progress_bands[i]
+
+            def prog(p):
+                with cb_lock:
+                    done[i] = min(max((p - base) / max(end - base, 1), 0.0), 1.0) * caps[i]
+                    if progress_callback:
+                        progress_callback(5 + int(85 * sum(done) / sum(caps)))
+
+            def spd(mbps):
+                with cb_lock:
+                    speeds[i] = float(mbps or 0.0)
+                    if speed_callback:
+                        speed_callback(round(sum(speeds), 1))
+
+            return prog, spd
+
+        if parallel > 1:
+            log_info(f"[CBT] {total_disks} disk(s), {parallel} at a time")
+        try:
+            with ThreadPoolExecutor(max_workers=parallel, thread_name_prefix="disk") as ex:
+                futures = [ex.submit(_do_disk, i, d, *_disk_callbacks(i)) for i, d in enumerate(disks)]
+                disk_manifest_entries = [f.result() for f in futures]
+        except _DisksCancelled:
+            return False, "Backup cancelled by user", None
 
         if progress_callback:
             progress_callback(93)
