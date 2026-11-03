@@ -15,7 +15,7 @@ from api.schemas import (
     RestoreCreateRequest, RestoreResponse, OverviewResponse,
     SessionLoginRequest, SessionLoginResponse, SessionMfaRequest,
     MfaSetupRequest, MfaSetupStartResponse, BootstrapResponse,
-    PolicyResponse, PolicyCreate, PolicyUpdate, PolicyAssign,
+    PolicyResponse, PolicyCreate, PolicyUpdate, PolicyAssign, AlertTestRequest,
 )
 from models import User, ApiKey, ESXiHost, VM
 from services import backup_ops
@@ -209,8 +209,25 @@ def update_config(
     db: Session = Depends(get_db),
     user: User = Depends(require_api_role("admin")),
 ):
-    config = backup_ops.update_full_config(db, body.model_dump(exclude_unset=True))
+    try:
+        config = backup_ops.update_full_config(db, body.model_dump(exclude_unset=True))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return ConfigResponse(**backup_ops.config_to_dict(config))
+
+
+@router.post("/config/alerts/test", response_model=TestResult)
+def test_alert(
+    body: AlertTestRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_api_role("admin")),
+):
+    from services import alert_ops
+    url = (body.url or "").strip() or (backup_ops.get_or_create_config(db).alert_webhook_url or "")
+    if not url.startswith("https://"):
+        return TestResult(ok=False, message="Set an https:// webhook URL first.")
+    ok, msg = alert_ops.test(url)
+    return TestResult(ok=ok, message=msg)
 
 
 @router.put("/config/storage", response_model=ConfigResponse)

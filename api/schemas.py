@@ -153,6 +153,11 @@ class ConfigResponse(BaseModel):
     imap_port: int
     imap_user: str
     imap_use_ssl: bool
+    alert_webhook_set: bool = False
+    alert_webhook_hint: str = ""
+    alert_on_failure: bool = True
+    alert_on_missed: bool = True
+    alert_on_storage: bool = True
 
 
 class ConfigUpdate(BaseModel):
@@ -193,6 +198,14 @@ class ConfigUpdate(BaseModel):
     imap_user: Optional[str] = None
     imap_password: Optional[str] = None
     imap_use_ssl: Optional[bool] = None
+    alert_webhook_url: Optional[str] = None  # "" clears it
+    alert_on_failure: Optional[bool] = None
+    alert_on_missed: Optional[bool] = None
+    alert_on_storage: Optional[bool] = None
+
+
+class AlertTestRequest(BaseModel):
+    url: Optional[str] = None  # None = the saved webhook
 
 
 class TestResult(BaseModel):

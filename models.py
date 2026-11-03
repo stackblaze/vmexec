@@ -119,6 +119,11 @@ class Config(Base):
     secondary_s3_secret_key = Column(EncryptedString, default="")
     secondary_s3_bucket = Column(String, default="")
     secondary_s3_region = Column(String, default="us-east-1")
+    # Alerts (services/alert_ops.py): one webhook, three switches
+    alert_webhook_url = Column(EncryptedString, default="")
+    alert_on_failure = Column(Boolean, default=True)
+    alert_on_missed = Column(Boolean, default=True)
+    alert_on_storage = Column(Boolean, default=True)
 
 class VM(Base):
     """List of VMs fetched from ESXi and marked for backup"""
@@ -281,6 +286,10 @@ def init_db():
             ("last_secondary_copy_status", "ALTER TABLE vms ADD COLUMN last_secondary_copy_status VARCHAR DEFAULT 'none'"),
             ("last_backup_duration", "ALTER TABLE vms ADD COLUMN last_backup_duration INTEGER DEFAULT 0"),
             ("policy_id", "ALTER TABLE vms ADD COLUMN policy_id INTEGER REFERENCES policies(id)"),
+            ("alert_webhook_url", "ALTER TABLE config ADD COLUMN alert_webhook_url VARCHAR DEFAULT ''"),
+            ("alert_on_failure", "ALTER TABLE config ADD COLUMN alert_on_failure BOOLEAN DEFAULT 1"),
+            ("alert_on_missed", "ALTER TABLE config ADD COLUMN alert_on_missed BOOLEAN DEFAULT 1"),
+            ("alert_on_storage", "ALTER TABLE config ADD COLUMN alert_on_storage BOOLEAN DEFAULT 1"),
         ]
         
         from logger_util import log_info, log_warn

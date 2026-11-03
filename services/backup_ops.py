@@ -72,7 +72,17 @@ def config_to_dict(config):
         "imap_port": config.imap_port,
         "imap_user": config.imap_user,
         "imap_use_ssl": config.imap_use_ssl,
+        "alert_webhook_set": bool(getattr(config, "alert_webhook_url", "") or ""),
+        "alert_webhook_hint": _webhook_hint(getattr(config, "alert_webhook_url", "") or ""),
+        "alert_on_failure": bool(getattr(config, "alert_on_failure", True)),
+        "alert_on_missed": bool(getattr(config, "alert_on_missed", True)),
+        "alert_on_storage": bool(getattr(config, "alert_on_storage", True)),
     }
+
+
+def _webhook_hint(url):
+    from services.alert_ops import webhook_hint
+    return webhook_hint(url)
 
 
 def update_storage_config(db, data):
@@ -178,6 +188,13 @@ def update_full_config(db, data):
         "smtp_use_ssl", "imap_server", "imap_port", "imap_user", "imap_use_ssl",
     }
     secret_fields = {"smb_password", "smtp_password", "imap_password", "s3_access_key", "s3_secret_key"}
+
+    url = data.get("alert_webhook_url")
+    if url:
+        url = url.strip()
+        if not url.startswith("https://"):
+            raise ValueError("The webhook URL must start with https://")
+        data = {**data, "alert_webhook_url": url}
 
     for key, value in data.items():
         if value is None:

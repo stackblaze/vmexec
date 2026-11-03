@@ -5,7 +5,7 @@ import hashlib
 import threading
 from models import SessionLocal, VM, Config, ESXiHost, init_db
 import worker
-from logger_util import log_info, log_error, log_critical
+from logger_util import log_info, log_warn, log_error, log_critical
 from config_env import DATA_DIR
 
 SNAPSHOT_SWEEP_INTERVAL_SECS = 300
@@ -48,6 +48,22 @@ def get_schedule_hash():
         return hashlib.md5(state_str.encode()).hexdigest()
     finally:
         db.close()
+
+def _check_alerts(db):
+    """Missed schedules and storage health -> webhook (services/alert_ops.py)."""
+    try:
+        from services import alert_ops, status_ops
+        config = db.query(Config).first()
+        if not config:
+            return
+        paused = bool(getattr(config, "scheduler_paused", False))
+        alert_ops.check_missed(db, config, db.query(VM).all(), paused=paused)
+        if config.storage_type == "NFS":
+            path = config.nfs_path or "/mnt/backups"
+            alert_ops.check_storage(config, lambda: status_ops.storage_health(path))
+    except Exception as e:  # noqa: BLE001 - alerts must never stop the daemon
+        log_warn(f"[ALERT] check failed: {e}")
+
 
 def run_daemon():
     init_db()
@@ -156,6 +172,7 @@ def run_daemon():
                 wdb = SessionLocal()
                 try:
                     worker.clear_orphaned_actions(wdb)
+                    _check_alerts(wdb)
                 finally:
                     wdb.close()
 

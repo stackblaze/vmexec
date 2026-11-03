@@ -743,6 +743,8 @@ def perform_backup(vm_id: int):
                 f"Error      : {log_msg}\n"
             )
             send_event_notification("backup_failure", f"[VMExec] ✗ Backup FAILED: {vm.vm_name}", rich_body)
+            from services import alert_ops
+            alert_ops.send(config, "failure", f"Backup of {vm.vm_name} failed: {(log_msg or '')[:300]}")
             send_email_report(config, [BackupLog(vm_name=vm.vm_name, status="Failed", message=log_msg)])
 
         db.commit()
