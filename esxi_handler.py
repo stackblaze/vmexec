@@ -364,17 +364,25 @@ def cleanup_ghost_tasks(si, vm_name, timeout_mins=60):
                     except Exception as e:
                         print(f"[RECOVERY] Failed to cancel task: {e}")
 
-def shutdown_vm(si, vm_name, graceful_timeout_mins=5):
+def shutdown_vm(si, vm_name, graceful_timeout_mins=5, connected_host=None):
     """
     Gracefully shuts down a VM using VMware Tools guest shutdown.
     Falls back to hard PowerOff if the guest doesn't respond within graceful_timeout_mins.
+    Refuses VMs VMExec depends on (power_guard): the connected vCenter, the
+    infrastructure patterns and VMEXEC_PROTECTED_VMS.
     Returns (success: bool, message: str)
     """
     import time
+    import power_guard
     content = si.RetrieveContent()
     vm = _find_vm(si, vm_name)
     if not vm:
         return False, f"VM {vm_name} not found"
+
+    blocked = power_guard.power_off_block_reason(si, vm, vm_name, connected_host)
+    if blocked:
+        log_warn(f"[POWER] Refusing to power off {vm_name}: {blocked}")
+        return False, f"Refusing to power off {vm_name}: {blocked}"
 
     power_state = getattr(vm.runtime, 'powerState', None)
     if power_state == 'poweredOff':

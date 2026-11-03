@@ -37,11 +37,12 @@
 
     <div class="pt-2 mb-2 border-t border-dashed border-border">
       <label class="flex items-center gap-2 text-xs cursor-pointer">
-        <input v-model="form.power_off_for_backup" type="checkbox" @change="save" />
+        <input v-model="form.power_off_for_backup" type="checkbox" @change="onPowerOffChange" />
         <span :class="form.power_off_for_backup ? 'text-orange-500' : 'text-emerald-600'">
           {{ form.power_off_for_backup ? 'Power off — faster backup' : 'Live — VM stays on' }}
         </span>
       </label>
+      <p v-if="error" class="mt-1 text-xs text-red-500" role="alert">{{ error }}</p>
     </div>
 
     <div class="pt-2 border-t border-dashed border-border">
@@ -68,6 +69,7 @@ const dayLabels = [
 ]
 
 const saved = ref(false)
+const error = ref('')
 let saveTimer = null
 
 const form = reactive({
@@ -100,6 +102,23 @@ function onDaysChange() {
   debounceSave()
 }
 
+// Power-off takes the VM offline for the whole backup, so turning it on is
+// never a single stray click.
+function onPowerOffChange() {
+  if (form.power_off_for_backup) {
+    const ok = window.confirm(
+      `Power off ${props.vm.vm_name} before every backup?\n\n` +
+      'VMExec shuts the VM down (hard power-off if the guest does not stop within 5 minutes), ' +
+      'backs it up, then powers it back on. The VM is offline for the whole backup.'
+    )
+    if (!ok) {
+      form.power_off_for_backup = false
+      return
+    }
+  }
+  save()
+}
+
 function debounceSave() {
   clearTimeout(saveTimer)
   saveTimer = setTimeout(save, 600)
@@ -107,6 +126,7 @@ function debounceSave() {
 
 async function save() {
   clearTimeout(saveTimer)
+  error.value = ''
   try {
     const body = {
       ...form,
@@ -118,6 +138,8 @@ async function save() {
     emit('updated', updated)
   } catch (e) {
     console.warn('schedule save failed', e)
+    error.value = e?.response?.data?.detail || e?.message || 'Save failed'
+    syncFromVm(props.vm)
   }
 }
 </script>

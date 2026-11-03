@@ -129,7 +129,9 @@ def vddk_base_disk_path(disk):
     """
     import re
     rel = disk["rel_path"]
-    base_rel = re.sub(r"-\d+\.vmdk$", ".vmdk", rel)
+    # Snapshot deltas are <base>-NNNNNN.vmdk (six digits). A looser -\d+ also
+    # ate the "-01" of a base disk named vyos-01.vmdk and opened vyos.vmdk.
+    base_rel = re.sub(r"-\d{6}\.vmdk$", ".vmdk", rel)
     return f"[{disk['ds_name']}] {base_rel}"
 
 

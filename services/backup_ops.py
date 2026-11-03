@@ -424,10 +424,19 @@ def vm_to_dict(vm, last_backup_message=None, config=None):
     }
 
 
+class PowerOffNotAllowed(Exception):
+    """power_off_for_backup requested for a VM VMExec must never power off."""
+
+
 def update_vm_job(db, vm_id, data):
     vm = db.query(VM).filter(VM.id == vm_id).first()
     if not vm:
         raise ValueError("VM not found")
+    if data.get("power_off_for_backup"):
+        import power_guard
+        blocked = power_guard.name_block_reason(vm.vm_name)
+        if blocked:
+            raise PowerOffNotAllowed(f"{vm.vm_name} cannot be powered off for backup: {blocked}.")
     for field in (
         "is_selected", "schedule_hour", "schedule_minute", "retention_count",
         "is_job_active", "power_off_for_backup", "cbt_enabled", "schedule_frequency",

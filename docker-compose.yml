@@ -19,6 +19,8 @@ services:
     environment:
       - DATA_DIR=/app/data
       - LOG_FILE=service.log
+      # VMs never powered off for backup (routers, this appliance); see power_guard.py
+      - VMEXEC_PROTECTED_VMS=${VMEXEC_PROTECTED_VMS:-}
     command: python -u main.py
 
   # ─── Background Worker Daemon ─────────────────────────────────────────────
@@ -36,6 +38,8 @@ services:
     environment:
       - DATA_DIR=/app/data
       - LOG_FILE=worker.log
+      # VMs never powered off for backup (routers, this appliance); see power_guard.py
+      - VMEXEC_PROTECTED_VMS=${VMEXEC_PROTECTED_VMS:-}
     command: python -u worker_daemon.py
 
 volumes:

@@ -134,7 +134,7 @@
               <span>{{ formatDate(liveProgress(vm).last_backup_ts ? liveProgress(vm).last_backup_ts : vm.last_backup) }}</span>
               <span v-if="!isActive(vm) && vm.last_backup && vm.last_backup_duration > 0" class="block text-[0.7rem] opacity-70">took {{ formatDuration(vm.last_backup_duration) }}</span>
             </td>
-            <td class="px-4 py-3 border-b border-border align-middle text-xs whitespace-nowrap" :title="vm.cbt_off_reason ? `Full backups only: ${vm.cbt_off_reason}` : ''">{{ scheduleLabel(vm) }}</td>
+            <td class="px-4 py-3 border-b border-border align-middle text-xs whitespace-nowrap" :title="vm.cbt_off_reason ? `Full backups only: ${vm.cbt_off_reason}` : ''">{{ scheduleLabel(vm) }}<span v-if="vm.power_off_for_backup" class="text-orange-500 font-semibold" title="The VM is shut down for each backup"> · Power off</span></td>
             <td class="text-right px-4 py-3 border-b border-border align-middle whitespace-nowrap overflow-visible relative">
               <div class="inline-flex gap-1 items-center justify-end">
                 <button
@@ -306,7 +306,7 @@
             </div>
             <div class="col-span-2">
               <span class="block font-semibold uppercase tracking-wide text-muted mb-1">Schedule</span>
-              <span>{{ scheduleLabel(detailVm) }}</span>
+              <span>{{ scheduleLabel(detailVm) }}<span v-if="detailVm.power_off_for_backup" class="text-orange-500 font-semibold"> · Power off</span></span>
             </div>
           </div>
 
