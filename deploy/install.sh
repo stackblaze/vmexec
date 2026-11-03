@@ -24,6 +24,8 @@
 #   --cache-gb N          ZeroFS cache budget in GB (default: 400)
 #   --password-file F     ZeroFS encryption password (required with --recover on a new VM)
 #   --recover             attach an existing ZeroFS repository (new VM, same bucket and password)
+#   --recover-if-present  recover when the prefix already holds a repository, else create one
+#                         (for automation, which cannot know in advance)
 #   --change-location     move this appliance to a different bucket/prefix (fresh repository there)
 #   --rotate-s3-key       replace the S3 key (with --credentials-file or asked for)
 #   --yes                 do not ask before formatting the cache disk
@@ -50,7 +52,7 @@ ZCONF=$ZDIR/config.toml
 PASSWORD_OUT=/root/vmexec-zerofs-password.txt
 
 BUCKET="" PREFIX=vmexec ENDPOINT="" REGION="" INSTANCE="" CRED_FILE="" VDDK="" CACHE_DEV=""
-CACHE_GB=400 PASSWORD_FILE="" RECOVER=0 CHANGE_LOCATION=0 ROTATE_KEY=0 YES=0 CHECK_ONLY=0
+CACHE_GB=400 PASSWORD_FILE="" RECOVER=0 RECOVER_IF_PRESENT=0 CHANGE_LOCATION=0 ROTATE_KEY=0 YES=0 CHECK_ONLY=0
 
 log() { printf '\033[1m==> %s\033[0m\n' "$*"; }
 die() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
@@ -68,11 +70,12 @@ while [ $# -gt 0 ]; do
     --cache-gb) CACHE_GB=$2; shift 2 ;;
     --password-file) PASSWORD_FILE=$2; shift 2 ;;
     --recover) RECOVER=1; shift ;;
+    --recover-if-present) RECOVER_IF_PRESENT=1; shift ;;
     --change-location) CHANGE_LOCATION=1; shift ;;
     --rotate-s3-key) ROTATE_KEY=1; shift ;;
     --yes) YES=1; shift ;;
     --check) CHECK_ONLY=1; shift ;;
-    -h|--help) sed -n '2,37p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,39p' "$0"; exit 0 ;;
     *) die "unknown option $1 (see --help)" ;;
   esac
 done
@@ -218,6 +221,22 @@ if [ -n "$PASSWORD_FILE" ]; then
   if [ -n "$PW" ] && [ "$PW" != "$given" ]; then die "--password-file differs from this appliance's password; refusing to replace it"; fi
   PW=$given
 fi
+
+# ---------------------------------------------------------------- 5. what is in S3
+log "Checking $URL"
+probe=$(mktemp)
+AWS_ACCESS_KEY_ID=$AK AWS_SECRET_ACCESS_KEY=$SK \
+  python3 "$APP_DIR/deploy/s3-usage.py" "$ENDPOINT" "$REGION" "$BUCKET" "$PREFIX" "$probe" >/dev/null \
+  || die "cannot list s3://$BUCKET/$PREFIX/ with this key (wrong key, bucket or endpoint?)"
+OBJECTS=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["objects"])' "$probe"); rm -f "$probe"
+if [ "$RECOVER_IF_PRESENT" = 1 ] && [ "$OBJECTS" != 0 ] && [ "$OLD_URL" != "$URL" ]; then RECOVER=1; fi
+if [ "$RECOVER" = 1 ] && [ "$OBJECTS" = 0 ]; then die "--recover: $URL is empty, nothing to recover"; fi
+if [ "$OBJECTS" != 0 ] && [ "$RECOVER" != 1 ] && [ "$OLD_URL" != "$URL" ]; then
+  die "$URL already holds $OBJECTS objects; use --recover to attach that repository, or pick an empty prefix"
+fi
+
+# Only now, knowing whether this is a recovery: a recovery must never get a
+# freshly generated password (it could not open the repository).
 if [ -z "$PW" ]; then
   [ "$RECOVER" = 1 ] && die "--recover needs --password-file (the password the backups were written with)"
   PW=$(python3 -c 'import secrets, string; a = string.ascii_letters + string.digits; print("".join(secrets.choice(a) for _ in range(64)))')
@@ -236,17 +255,6 @@ if [ "$NEW_PASSWORD" = 1 ]; then
   ( umask 077; printf '%s\n' "$PW" > "$PASSWORD_OUT" )
 fi
 
-# ---------------------------------------------------------------- 5. what is in S3
-log "Checking $URL"
-probe=$(mktemp)
-AWS_ACCESS_KEY_ID=$AK AWS_SECRET_ACCESS_KEY=$SK \
-  python3 "$APP_DIR/deploy/s3-usage.py" "$ENDPOINT" "$REGION" "$BUCKET" "$PREFIX" "$probe" >/dev/null \
-  || die "cannot list s3://$BUCKET/$PREFIX/ with this key (wrong key, bucket or endpoint?)"
-OBJECTS=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["objects"])' "$probe"); rm -f "$probe"
-if [ "$RECOVER" = 1 ] && [ "$OBJECTS" = 0 ]; then die "--recover: $URL is empty, nothing to recover"; fi
-if [ "$OBJECTS" != 0 ] && [ "$RECOVER" != 1 ] && [ "$OLD_URL" != "$URL" ]; then
-  die "$URL already holds $OBJECTS objects; use --recover to attach that repository, or pick an empty prefix"
-fi
 
 # ---------------------------------------------------------------- 6. stop for a location change
 if [ -n "$OLD_URL" ] && [ "$OLD_URL" != "$URL" ]; then
