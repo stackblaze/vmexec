@@ -54,6 +54,14 @@ class TestVsphereContext(unittest.TestCase):
             "[ds1] vyos-02/vyos-02.vmdk",
         )
 
+    def test_vddk_base_disk_path_keeps_numbered_base_name(self):
+        # vyos-01.vmdk is a base disk, not a snapshot delta: it must not
+        # become vyos.vmdk (seen on the 2026-11-03 vyos-01 backups).
+        disk = {"ds_name": "ds1", "rel_path": "vyos-01/vyos-01.vmdk"}
+        self.assertEqual(vsphere_context.vddk_base_disk_path(disk), "[ds1] vyos-01/vyos-01.vmdk")
+        delta = {"ds_name": "ds1", "rel_path": "vyos-01/vyos-01-000003.vmdk"}
+        self.assertEqual(vsphere_context.vddk_base_disk_path(delta), "[ds1] vyos-01/vyos-01.vmdk")
+
     def test_build_nbdkit_cmd_standalone(self):
         si = MagicMock()
         si.RetrieveContent.return_value.about.apiType = "HostAgent"

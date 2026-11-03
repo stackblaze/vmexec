@@ -384,7 +384,14 @@ def latest_backup_messages(db, vm_names):
     return {name: msg for name, msg in rows}
 
 
-def vm_to_dict(vm, last_backup_message=None):
+def vm_to_dict(vm, last_backup_message=None, config=None):
+    from cbt_core import incremental_blocked_reason
+    cbt_off_reason = None
+    if config is not None:
+        is_s3 = (getattr(config, "storage_type", "") or "").upper() == "S3"
+        cbt_off_reason = incremental_blocked_reason(config, vm, is_s3)
+    elif getattr(vm, "cbt_enabled", True) is False:
+        cbt_off_reason = "CBT disabled for VM"
     return {
         "id": vm.id,
         "vm_name": vm.vm_name,
@@ -407,16 +414,29 @@ def vm_to_dict(vm, last_backup_message=None):
         "power_state": vm.power_state,
         "power_off_for_backup": vm.power_off_for_backup,
         "cbt_enabled": getattr(vm, "cbt_enabled", True),
+        # What the worker will actually do: False when the global setting or
+        # S3 storage forces fulls, whatever the per-VM flag says.
+        "cbt_effective": cbt_off_reason is None,
+        "cbt_off_reason": cbt_off_reason,
         "host_name": vm.esxi_host.name if vm.esxi_host else "",
         "last_secondary_copy_status": getattr(vm, "last_secondary_copy_status", None) or "none",
         "last_backup_message": last_backup_message,
     }
 
 
+class PowerOffNotAllowed(Exception):
+    """power_off_for_backup requested for a VM VMExec must never power off."""
+
+
 def update_vm_job(db, vm_id, data):
     vm = db.query(VM).filter(VM.id == vm_id).first()
     if not vm:
         raise ValueError("VM not found")
+    if data.get("power_off_for_backup"):
+        import power_guard
+        blocked = power_guard.name_block_reason(vm.vm_name)
+        if blocked:
+            raise PowerOffNotAllowed(f"{vm.vm_name} cannot be powered off for backup: {blocked}.")
     for field in (
         "is_selected", "schedule_hour", "schedule_minute", "retention_count",
         "is_job_active", "power_off_for_backup", "cbt_enabled", "schedule_frequency",
@@ -811,6 +831,44 @@ def _disk_usage_for_path(path):
     return None
 
 
+# Where the containers see this machine's disks: the app data volume and the
+# local backup mount (docker-compose maps VMEXEC_BACKUP_DIR to /mnt/backups).
+MACHINE_DISK_PATHS = (
+    ("App data", DATA_DIR),
+    ("Backup disk", os.environ.get("VMEXEC_BACKUP_MOUNT", "/mnt/backups")),
+)
+
+
+def _machine_disks():
+    """Usage of this machine's own disks, whatever the storage type (with S3
+    the repository has no fixed size, but the machine's disks still fill up).
+    Paths on the same filesystem are shown once. Not cached: statvfs is cheap
+    and the numbers should move while a backup runs."""
+    out, seen = [], set()
+    for label, path in MACHINE_DISK_PATHS:
+        try:
+            if not path or not os.path.isdir(path):
+                continue
+            dev = os.stat(path).st_dev
+            if dev in seen:
+                continue
+            seen.add(dev)
+            usage = shutil.disk_usage(path)
+        except OSError:
+            continue
+        if not usage.total:
+            continue
+        out.append({
+            "label": label,
+            "path": path,
+            "total_gb": round(usage.total / (1024 ** 3), 1),
+            "used_gb": round(usage.used / (1024 ** 3), 1),
+            "free_gb": round(usage.free / (1024 ** 3), 1),
+            "used_pct": round(100 * usage.used / usage.total, 1),
+        })
+    return out
+
+
 def _cached_storage_scan(config):
     global _overview_storage_cache
     now = time.time()
@@ -978,6 +1036,7 @@ def get_overview(db):
         "log_stats_7d": log_stats_7d,
         "success_rate_7d": success_rate_7d,
         "storage": storage,
+        "machine_disks": _machine_disks(),
         "worker_online": worker_online,
         "worker_last_seen_seconds": worker_age,
         "max_global_backups": config.max_global_backups or 10,

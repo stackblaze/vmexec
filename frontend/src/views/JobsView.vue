@@ -134,7 +134,7 @@
               <span>{{ formatDate(liveProgress(vm).last_backup_ts ? liveProgress(vm).last_backup_ts : vm.last_backup) }}</span>
               <span v-if="!isActive(vm) && vm.last_backup && vm.last_backup_duration > 0" class="block text-[0.7rem] opacity-70">took {{ formatDuration(vm.last_backup_duration) }}</span>
             </td>
-            <td class="px-4 py-3 border-b border-border align-middle text-xs whitespace-nowrap">{{ scheduleLabel(vm) }}</td>
+            <td class="px-4 py-3 border-b border-border align-middle text-xs whitespace-nowrap" :title="vm.cbt_off_reason ? `Full backups only: ${vm.cbt_off_reason}` : ''">{{ scheduleLabel(vm) }}<span v-if="vm.power_off_for_backup" class="text-orange-500 font-semibold" title="The VM is shut down for each backup"> · Power off</span></td>
             <td class="text-right px-4 py-3 border-b border-border align-middle whitespace-nowrap overflow-visible relative">
               <div class="inline-flex gap-1 items-center justify-end">
                 <button
@@ -158,16 +158,24 @@
                   <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
                 </button>
                 <div class="relative inline-block" data-schedule-menu>
-                  <button type="button" :class="btnIconSecondary" title="Schedule settings" @click="toggleScheduleMenu(vm.id)">
+                  <button type="button" :class="btnIconSecondary" title="Schedule settings" @click="toggleScheduleMenu(vm.id, $event)">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                   </button>
-                  <div
-                    v-if="openScheduleId === vm.id"
-                    class="absolute right-0 top-[calc(100%+0.35rem)] z-60 min-w-[15.5rem] max-w-[17rem] p-3 rounded-lg border border-border bg-card shadow-[0_10px_28px_rgba(0,0,0,0.16)] text-left"
-                  >
-                    <div class="text-[0.6875rem] font-bold uppercase tracking-wider text-muted mb-2 pb-1.5 border-b border-border">Schedule</div>
-                    <JobSchedulePopover :vm="vm" @updated="onVmUpdated" />
-                  </div>
+                  <!-- Rendered on <body>: the table wrapper scrolls (overflow-x-auto),
+                       which clipped the menu on the last rows. Positioned from the
+                       button, opening upward when there is no room below. -->
+                  <Teleport to="body">
+                    <div
+                      v-if="openScheduleId === vm.id"
+                      ref="scheduleMenuEl"
+                      data-schedule-menu
+                      class="fixed z-60 min-w-[15.5rem] max-w-[17rem] overflow-y-auto p-3 rounded-lg border border-border bg-card shadow-[0_10px_28px_rgba(0,0,0,0.16)] text-left"
+                      :style="scheduleMenuStyle"
+                    >
+                      <div class="text-[0.6875rem] font-bold uppercase tracking-wider text-muted mb-2 pb-1.5 border-b border-border">Schedule</div>
+                      <JobSchedulePopover :vm="vm" @updated="onVmUpdated" />
+                    </div>
+                  </Teleport>
                 </div>
                 <button type="button" :class="btnIconSecondary" class="hover:text-red-500" title="Remove from tasks" @click="removeVm(vm)">
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
@@ -298,7 +306,7 @@
             </div>
             <div class="col-span-2">
               <span class="block font-semibold uppercase tracking-wide text-muted mb-1">Schedule</span>
-              <span>{{ scheduleLabel(detailVm) }}</span>
+              <span>{{ scheduleLabel(detailVm) }}<span v-if="detailVm.power_off_for_backup" class="text-orange-500 font-semibold"> · Power off</span></span>
             </div>
           </div>
 
@@ -370,7 +378,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { jobsApi, hostsApi, logsApi } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useJobProgress, isJobActive, statusBadge, formatDate, formatDuration, formatRelativeTime } from '@/composables/useJobProgress'
@@ -405,6 +413,9 @@ const selectedIds = ref(new Set())
 const sortKey = ref('schedule')
 const sortDir = ref('asc')
 const openScheduleId = ref(null)
+const scheduleMenuEl = ref(null)
+const scheduleMenuStyle = ref({})
+let scheduleAnchor = null
 const selectAllRef = ref(null)
 const detailVm = ref(null)
 const detailLogs = ref([])
@@ -541,7 +552,10 @@ function scheduleLabel(vm) {
   const freq = (vm.schedule_frequency || 'daily').replace(/^./, (c) => c.toUpperCase())
   const h = String(vm.schedule_hour).padStart(2, '0')
   const m = String(vm.schedule_minute).padStart(2, '0')
-  const cbt = vm.cbt_enabled !== false ? 'CBT' : 'full'
+  // cbt_effective (from the API) also covers the global switch and S3, which
+  // force fulls whatever the per-VM flag says; fall back for older servers.
+  const incremental = vm.cbt_effective ?? (vm.cbt_enabled !== false)
+  const cbt = incremental ? 'CBT' : 'full'
   return `${freq} ${h}:${m} · keep ${vm.retention_count} · ${cbt}`
 }
 
@@ -626,8 +640,56 @@ function clearSelection() {
   selectedIds.value = new Set()
 }
 
-function toggleScheduleMenu(id) {
-  openScheduleId.value = openScheduleId.value === id ? null : id
+function toggleScheduleMenu(id, e) {
+  if (openScheduleId.value === id) {
+    closeScheduleMenu()
+    return
+  }
+  scheduleAnchor = e?.currentTarget || null
+  openScheduleId.value = id
+  placeScheduleMenu()
+}
+
+function closeScheduleMenu() {
+  openScheduleId.value = null
+  scheduleAnchor = null
+}
+
+const MENU_GAP = 6
+const VIEWPORT_MARGIN = 8
+
+// Below the button when it fits, otherwise on whichever side has more room;
+// right-aligned to the button and capped to the viewport (the menu scrolls).
+async function placeScheduleMenu() {
+  if (!scheduleAnchor) return
+  const r = scheduleAnchor.getBoundingClientRect()
+  const right = Math.max(VIEWPORT_MARGIN, window.innerWidth - r.right)
+  // First pass, hidden, to measure the rendered height.
+  scheduleMenuStyle.value = { top: `${r.bottom + MENU_GAP}px`, right: `${right}px`, visibility: 'hidden' }
+  await nextTick()
+  // The ref sits inside v-for, so Vue hands back an array.
+  const el = Array.isArray(scheduleMenuEl.value) ? scheduleMenuEl.value[0] : scheduleMenuEl.value
+  if (!el) return
+  const h = el.scrollHeight
+  const below = window.innerHeight - r.bottom - MENU_GAP - VIEWPORT_MARGIN
+  const above = r.top - MENU_GAP - VIEWPORT_MARGIN
+  if (h <= below || below >= above) {
+    scheduleMenuStyle.value = { top: `${r.bottom + MENU_GAP}px`, right: `${right}px`, maxHeight: `${below}px` }
+  } else {
+    scheduleMenuStyle.value = { bottom: `${window.innerHeight - r.top + MENU_GAP}px`, right: `${right}px`, maxHeight: `${above}px` }
+  }
+}
+
+// A fixed menu would drift away from its row on scroll: follow the button,
+// unless the scroll happens inside the menu itself.
+function onScrollOrResize(e) {
+  if (openScheduleId.value === null) return
+  if (e?.target?.closest?.('[data-schedule-menu]')) return
+  if (scheduleAnchor && !scheduleAnchor.isConnected) {
+    closeScheduleMenu()
+    return
+  }
+  placeScheduleMenu()
 }
 
 function onVmUpdated(updated) {
@@ -777,12 +839,18 @@ async function applyInventory() {
 }
 
 function onDocClick(e) {
-  if (!e.target.closest('[data-schedule-menu]')) openScheduleId.value = null
+  if (!e.target.closest('[data-schedule-menu]')) closeScheduleMenu()
 }
 
 onMounted(() => {
   load()
   document.addEventListener('click', onDocClick)
+  window.addEventListener('scroll', onScrollOrResize, true)
+  window.addEventListener('resize', onScrollOrResize)
 })
-onUnmounted(() => document.removeEventListener('click', onDocClick))
+onUnmounted(() => {
+  document.removeEventListener('click', onDocClick)
+  window.removeEventListener('scroll', onScrollOrResize, true)
+  window.removeEventListener('resize', onScrollOrResize)
+})
 </script>

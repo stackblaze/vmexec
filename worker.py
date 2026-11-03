@@ -1,5 +1,6 @@
 import os
 import threading
+import time
 import subprocess
 import datetime
 import smtplib
@@ -11,6 +12,7 @@ import esxi_handler
 import backup_engine
 import storage_util
 import vsphere_context
+import power_guard
 from models import SessionLocal, Config, VM, BackupLog, RestoreJob
 from config_env import DATA_DIR
 from logger_util import log_info, log_warn, log_error, log_debug
@@ -151,6 +153,17 @@ _cancelled_backups = set()
 _cancel_lock = threading.Lock()
 _active_backup_vm_ids = set()
 _active_backup_lock = threading.Lock()
+_active_backup_started = {}   # vm_id -> time.time() the backup thread started
+_time_limit_stopped = set()   # vm_ids already stopped by the time limit
+_orphan_action_seen = {}      # vm_id -> action seen with no backup thread (watchdog)
+
+# Hard ceiling on one backup job. Individual steps have their own timeouts,
+# but nothing bounded the whole job. Default 12 h (a 1 TB full at ~50 MB/s
+# is ~6 h).
+try:
+    MAX_JOB_HOURS = max(1.0, float(os.environ.get("VMEXEC_MAX_JOB_HOURS", "12")))
+except ValueError:
+    MAX_JOB_HOURS = 12.0
 
 WAIT_HOST = "Waiting for host slot..."
 WAIT_GLOBAL = "Waiting for worker slot..."
@@ -325,6 +338,65 @@ def queue_backup(vm_id: int):
     db.close()
 
 
+def enforce_job_time_limit(now=None, max_hours=None):
+    """Stop backups that have run longer than MAX_JOB_HOURS (once per job).
+    Uses the normal stop path (cancel flag + terminate helper processes), so
+    the job's own finally block still removes its snapshot. Returns the VM ids
+    stopped this call."""
+    now = now or time.time()
+    limit = (max_hours or MAX_JOB_HOURS) * 3600
+    with _active_backup_lock:
+        overdue = [vid for vid, started in _active_backup_started.items()
+                   if now - started > limit and vid not in _time_limit_stopped]
+        _time_limit_stopped.update(overdue)
+    for vid in overdue:
+        hours = (now - _active_backup_started.get(vid, now)) / 3600
+        db = SessionLocal()
+        try:
+            vm = db.query(VM).filter(VM.id == vid).first()
+            name = vm.vm_name if vm else f"VM {vid}"
+            msg = f"Backup stopped: exceeded the {max_hours or MAX_JOB_HOURS:g} h job limit (ran {hours:.1f} h)"
+            log_error(f"[TIMEOUT] {name}: {msg}")
+            db.add(BackupLog(vm_name=name, status="Failed", message=msg))
+            db.commit()
+        finally:
+            db.close()
+        stop_job(vid)
+    return overdue
+
+
+# Busy states that need no backup thread (yet) and are not orphans.
+_STATES_WITHOUT_THREAD = ("", "PENDING_RUN", "PENDING_STOP", "Queued...", WAIT_HOST, WAIT_GLOBAL)
+
+
+def clear_orphaned_actions(db):
+    """Clear a busy state ("Cleaning up...", "Backing up...", ...) left on a VM
+    with no backup thread running. queue_backup skips such a VM forever, so
+    one crash silently stopped all its scheduled backups until a restart.
+    A VM is cleared only when seen orphaned on two consecutive calls (the
+    daemon calls this every minute), so a job that is just starting is never
+    touched. Returns the VM names cleared."""
+    active = get_active_backup_vm_ids()
+    cleared, seen_now = [], {}
+    for vm in db.query(VM).all():
+        action = (vm.current_action or "").strip()
+        if action in _STATES_WITHOUT_THREAD or vm.id in active or vm.id in active_processes:
+            continue
+        if _orphan_action_seen.get(vm.id) == action:
+            log_warn(f"[WATCHDOG] Clearing stale '{action}' on {vm.vm_name}: no backup is running")
+            vm.current_action = ""
+            vm.progress = 0
+            vm.speed_mbps = 0.0
+            cleared.append(vm.vm_name)
+        else:
+            seen_now[vm.id] = action
+    if cleared:
+        db.commit()
+    _orphan_action_seen.clear()
+    _orphan_action_seen.update(seen_now)
+    return cleared
+
+
 def stop_job(vm_id: int):
     """Request termination of an active backup for a VM."""
     pid = os.getpid()
@@ -395,24 +467,39 @@ def perform_backup(vm_id: int):
 
     with _active_backup_lock:
         _active_backup_vm_ids.add(vm_id)
+        _active_backup_started[vm_id] = time.time()
 
     try:
         timeout_m = config.backup_timeout_mins if hasattr(config, 'backup_timeout_mins') else 15
         use_cbt = getattr(config, "cbt_enabled", True) and getattr(vm, "cbt_enabled", True)
         dest_rel_dir = get_backup_dest_folder(vm.vm_name)
 
+        # Excluded infrastructure VMs are skipped before anything touches them
+        # (preflight repeats the check; it used to be the only one, and ran
+        # after the power-off below).
+        if backup_engine._is_infra_vm(vm.vm_name, config):
+            raise BackupSkipped(
+                f"Infrastructure VM excluded from backup ({vm.vm_name}). "
+                "Disable exclude_infra_vms in settings to override."
+            )
+
         # --- POWER OFF (if configured) ---
         if getattr(vm, 'power_off_for_backup', False):
-            from pyVmomi import vim as _vim
             esxi_vm = vsphere_context.find_vm_by_name(si, vm.vm_name)
             current_power = getattr(esxi_vm.runtime, 'powerState', 'poweredOff') if esxi_vm else 'poweredOff'
+            blocked = power_guard.power_off_block_reason(si, esxi_vm, vm.vm_name, host.host_ip)
 
-            if current_power != 'poweredOff':
+            if blocked and current_power != 'poweredOff':
+                msg = f"Power off for backup ignored for {vm.vm_name}: {blocked}. Backing up live instead."
+                log_warn(f"[PID {pid}] {msg}")
+                db.add(BackupLog(vm_name=vm.vm_name, status="Warning", message=msg))
+                db.commit()
+            elif current_power != 'poweredOff':
                 vm.current_action = "Shutting down VM..."
                 vm.progress = 0
                 db.commit()
                 log_info(f"[PID {pid}] Power-off-for-backup enabled. Shutting down {vm.vm_name}...")
-                ok, msg = esxi_handler.shutdown_vm(si, vm.vm_name, graceful_timeout_mins=5)
+                ok, msg = esxi_handler.shutdown_vm(si, vm.vm_name, graceful_timeout_mins=5, connected_host=host.host_ip)
                 if not ok:
                     raise Exception(f"Shutdown failed: {msg}")
                 powered_off_by_us = True
@@ -675,11 +762,20 @@ def perform_backup(vm_id: int):
             db.commit()
             timeout_m = config.backup_timeout_mins if hasattr(config, 'backup_timeout_mins') else 15
             esxi_handler.remove_snapshot(si, vm.vm_name, timeout_mins=timeout_m)
-            vm.progress = 0
-            vm.current_action = ""
-            db.commit()
         except Exception as e:
             log_error(f"[PID {pid}] Cleanup failed for {vm.vm_name}: {e}")
+            # The orphan-snapshot sweep retries the removal later.
+        finally:
+            # Always leave the busy state, even when cleanup failed. It used to
+            # stay "Cleaning up..." forever, and queue_backup then skipped every
+            # later run of this VM as "Already active" until a worker restart.
+            try:
+                db.rollback()
+                vm.progress = 0
+                vm.current_action = ""
+                db.commit()
+            except Exception as e:
+                log_error(f"[PID {pid}] Could not reset state for {vm.vm_name}: {e}")
 
         # --- POWER ON (restore VM state if we shut it down) ---
         if powered_off_by_us:
@@ -703,6 +799,8 @@ def perform_backup(vm_id: int):
         clear_backup_cancel(vm_id)
         with _active_backup_lock:
             _active_backup_vm_ids.discard(vm_id)
+            _active_backup_started.pop(vm_id, None)
+            _time_limit_stopped.discard(vm_id)
         esxi_handler.Disconnect(si)
         db.close()
         _release_and_drain(host_id)

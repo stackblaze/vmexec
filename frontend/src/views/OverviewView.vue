@@ -17,21 +17,7 @@
     </div>
 
     <div v-if="data?.vddk_installed === false && data?.host_count > 0" class="mb-5 px-4 py-3 rounded-lg border border-yellow-500/35 bg-yellow-500/8 text-sm flex items-center justify-between gap-3">
-      <span class="flex-1 min-w-0">
-        <span class="block font-semibold mb-1">VDDK not installed — backups will fail</span>
-        <span class="block leading-relaxed">
-          VMExec streams virtual disks through VMware's Virtual Disk Development Kit (VDDK).
-          It is <strong>proprietary software, not open source</strong>, and its licence forbids
-          redistribution — so it cannot be bundled with VMExec and must be downloaded
-          <strong>directly from Broadcom</strong> using a free developer account, where you accept
-          their licence yourself.
-          Choose the <strong>Linux 64-bit</strong> package
-          (<code class="font-mono">VMware-vix-disklib-*.tar.gz</code>, v8 or v9 — match it to your
-          vSphere version), then place the tarball in <code class="font-mono">vendor/vddk/</code>
-          on the server. VMExec detects and installs it automatically; no restart needed, and this
-          message clears once it is in place.
-        </span>
-      </span>
+      <span class="flex-1 min-w-0 font-semibold">VDDK not installed</span>
       <a href="https://developer.broadcom.com/sdks/vmware-virtual-disk-development-kit-vddk/latest" target="_blank" rel="noopener noreferrer" class="shrink-0 rounded bg-brand text-white px-3 py-1.5 text-xs font-semibold transition-colors duration-200 hover:bg-brand-hover">Download VDDK</a>
     </div>
 
@@ -90,18 +76,42 @@
                   <circle class="fill-none stroke-[3.2] stroke-brand transition-[stroke-dasharray,stroke-dashoffset] duration-[450ms]" cx="18" cy="18" r="15.9155" pathLength="100" :style="donutSeg(backupPct, freePct + usedPct)" />
                 </svg>
                 <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none text-center">
-                  <div class="text-sm font-bold leading-tight tabular-nums">{{ data.storage.disk_free_gb?.toFixed(0) }} GB</div>
+                  <div class="text-sm font-bold leading-tight tabular-nums">{{ formatGb(data.storage.disk_free_gb) }}</div>
                   <div class="text-[0.625rem] font-semibold mt-0.5 text-muted">{{ data.storage.disk_free_pct?.toFixed(0) }}% free</div>
                 </div>
               </div>
             </div>
             <p class="flex flex-wrap items-center justify-center gap-2 mt-1 text-[0.625rem] text-muted">
-              <span class="inline-flex items-center gap-1"><span class="w-[0.45rem] h-[0.45rem] rounded-full shrink-0 bg-emerald-500"></span>Free <strong>{{ data.storage.disk_free_gb?.toFixed(1) }} GB</strong></span>
+              <span class="inline-flex items-center gap-1"><span class="w-[0.45rem] h-[0.45rem] rounded-full shrink-0 bg-emerald-500"></span>Free <strong>{{ formatGb(data.storage.disk_free_gb, 1) }}</strong></span>
               <span>·</span>
-              <span class="inline-flex items-center gap-1"><span class="w-[0.45rem] h-[0.45rem] rounded-full shrink-0 bg-slate-500"></span>Used <strong>{{ data.storage.disk_used_gb?.toFixed(1) }} GB</strong></span>
+              <span class="inline-flex items-center gap-1"><span class="w-[0.45rem] h-[0.45rem] rounded-full shrink-0 bg-slate-500"></span>Used <strong>{{ formatGb(data.storage.disk_used_gb, 1) }}</strong></span>
               <span>·</span>
               <span class="inline-flex items-center gap-1"><span class="w-[0.45rem] h-[0.45rem] rounded-full shrink-0 bg-brand"></span>Backups <strong>{{ data.storage.total_human }}</strong></span>
             </p>
+          </div>
+          <div v-if="data?.storage?.type === 'S3'" class="pt-3 mt-3 border-t border-border text-xs">
+            <span class="text-muted">Backups in bucket</span>
+            <strong class="ml-1 tabular-nums">{{ data.storage.total_human }}</strong>
+            <span class="text-muted"> · {{ data.storage.version_count }} restore points</span>
+          </div>
+          <div v-if="data?.machine_disks?.length" class="pt-3 mt-3 border-t border-border space-y-3">
+            <div class="text-[0.6875rem] font-bold uppercase tracking-wider text-muted">This machine</div>
+            <div v-for="d in data.machine_disks" :key="d.path">
+              <div class="flex items-baseline justify-between gap-2 text-xs mb-1">
+                <span class="min-w-0 truncate">{{ d.label }} <span class="font-mono text-muted">{{ d.path }}</span></span>
+                <span class="shrink-0 tabular-nums" :class="diskTextClass(d.used_pct)">{{ formatGb(d.free_gb) }} free of {{ formatGb(d.total_gb) }}</span>
+              </div>
+              <div
+                class="h-2 rounded-sm bg-border overflow-hidden"
+                role="progressbar"
+                :aria-label="`${d.label} used`"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                :aria-valuenow="Math.round(d.used_pct)"
+              >
+                <div class="h-full rounded-sm transition-[width] duration-[450ms]" :class="diskBarClass(d.used_pct)" :style="{ width: `${Math.min(100, d.used_pct)}%` }"></div>
+              </div>
+            </div>
           </div>
           <div v-if="data?.storage?.scan_error" class="mt-3 text-xs text-red-400">{{ data.storage.scan_error }}</div>
         </div>
@@ -247,6 +257,30 @@ function barRows(counts, colors) {
     pct: Math.max(count ? (count / total) * 100 : 0, count ? 4 : 0),
     color: colors[key] || '#6b7280',
   }))
+}
+
+// Disk bars: amber from 70% used, red from 85%.
+function diskBarClass(usedPct) {
+  if (usedPct >= 85) return 'bg-red-500'
+  if (usedPct >= 70) return 'bg-amber-500'
+  return 'bg-emerald-500'
+}
+// Sizes arrive in GiB; step up to TB/PB/EB so large or S3-backed volumes
+// (ZeroFS reports 16 EiB) read as "16 EB", not 17179869184 GB.
+function formatGb(gb, digits = 0) {
+  if (gb == null || !Number.isFinite(Number(gb))) return '—'
+  const units = ['GB', 'TB', 'PB', 'EB']
+  let v = Number(gb)
+  let i = 0
+  while (Math.abs(v) >= 1024 && i < units.length - 1) { v /= 1024; i++ }
+  const d = i === 0 ? digits : (Math.abs(v) < 100 ? 1 : 0)
+  return `${Number(v.toFixed(d))} ${units[i]}`
+}
+
+function diskTextClass(usedPct) {
+  if (usedPct >= 85) return 'text-red-400 font-semibold'
+  if (usedPct >= 70) return 'text-amber-500 font-semibold'
+  return 'text-muted'
 }
 
 function donutSeg(pctVal, offset) {

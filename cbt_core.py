@@ -149,15 +149,29 @@ def query_changed_areas(vm, snap_obj, device_key, previous_change_id, capacity_b
     return areas
 
 
+def incremental_blocked_reason(config, vm, storage_is_s3):
+    """Why this VM can never get an incremental with the current settings, or
+    None if incrementals are possible. One rule set for the worker (below) and
+    for what the UI shows, so the Backup list cannot claim CBT when every run
+    is in fact a full."""
+    # S3 first: it is the root cause when it applies (the setup wizard also
+    # switches the global CBT setting off for S3, and Settings locks it).
+    if storage_is_s3:
+        return "S3 storage requires full backups (no delta chain)"
+    if not getattr(config, "cbt_enabled", True):
+        return "CBT disabled in config"
+    if getattr(vm, "cbt_enabled", None) is False:
+        return "CBT disabled for VM"
+    return None
+
+
 def should_take_full_backup(config, vm, chain, storage):
     """Decide whether the next backup should be a full (not incremental)."""
     from backup_manifest import count_incrementals_since_full
-    if not getattr(config, "cbt_enabled", True):
-        return True, "CBT disabled in config"
-    if getattr(vm, "cbt_enabled", None) is False:
-        return True, "CBT disabled for VM"
-    if storage and getattr(storage, "get_base_path", lambda: "")().startswith("s3://"):
-        return True, "S3 storage requires full backups (no delta chain)"
+    is_s3 = bool(storage and getattr(storage, "get_base_path", lambda: "")().startswith("s3://"))
+    blocked = incremental_blocked_reason(config, vm, is_s3)
+    if blocked:
+        return True, blocked
     if not chain or not chain.get("points"):
         return True, "No existing chain"
     latest = chain["points"][-1]

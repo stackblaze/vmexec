@@ -91,7 +91,7 @@ class Config(Base):
     # Backup transport: legacy (CopyVirtualDisk temp) | nbd (VDDK/NFC stream)
     backup_transport = Column(String, default="nbd")
     repo_min_free_gb = Column(Integer, default=50)
-    exclude_infra_vms = Column(Boolean, default=False)
+    exclude_infra_vms = Column(Boolean, default=True)  # same default as the column migration
     # CBT / incremental backup settings
     cbt_enabled = Column(Boolean, default=True)
     cbt_full_interval = Column(Integer, default=7)  # incremental count before forced full
