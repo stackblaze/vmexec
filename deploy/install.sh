@@ -27,6 +27,7 @@
 #   --change-location     move this appliance to a different bucket/prefix (fresh repository there)
 #   --rotate-s3-key       replace the S3 key (with --credentials-file or asked for)
 #   --yes                 do not ask before formatting the cache disk
+#   --check               only run the checks and install the prerequisites, then stop
 #
 # The encryption password is generated once and never overwritten. Without it the
 # backups in S3 cannot be read: on a fresh install it is written to
@@ -49,7 +50,7 @@ ZCONF=$ZDIR/config.toml
 PASSWORD_OUT=/root/vmexec-zerofs-password.txt
 
 BUCKET="" PREFIX=vmexec ENDPOINT="" REGION="" INSTANCE="" CRED_FILE="" VDDK="" CACHE_DEV=""
-CACHE_GB=400 PASSWORD_FILE="" RECOVER=0 CHANGE_LOCATION=0 ROTATE_KEY=0 YES=0
+CACHE_GB=400 PASSWORD_FILE="" RECOVER=0 CHANGE_LOCATION=0 ROTATE_KEY=0 YES=0 CHECK_ONLY=0
 
 log() { printf '\033[1m==> %s\033[0m\n' "$*"; }
 die() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
@@ -70,12 +71,87 @@ while [ $# -gt 0 ]; do
     --change-location) CHANGE_LOCATION=1; shift ;;
     --rotate-s3-key) ROTATE_KEY=1; shift ;;
     --yes) YES=1; shift ;;
-    -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
+    --check) CHECK_ONLY=1; shift ;;
+    -h|--help) sed -n '2,37p' "$0"; exit 0 ;;
     *) die "unknown option $1 (see --help)" ;;
   esac
 done
 
 [ "$(id -u)" = 0 ] || die "run as root"
+
+# ---------------------------------------------------------------- 0. checks and prerequisites
+# Everything VMExec needs is checked or installed here, before anything else changes.
+warn() { printf '  \033[33mwarning:\033[0m %s\n' "$*"; }
+ok() { printf '  ok   %s\n' "$*"; }
+preflight() {
+  log "Checks"
+  . /etc/os-release
+  [ "${ID:-}" = ubuntu ] || die "Ubuntu 22.04 or 24.04 is required (found ${PRETTY_NAME:-unknown})"
+  case "${VERSION_ID:-}" in 22.04|24.04) ok "$PRETTY_NAME" ;; *) die "Ubuntu 22.04 or 24.04 is required (found $PRETTY_NAME)" ;; esac
+  [ "$(uname -m)" = x86_64 ] || die "x86_64 is required (VDDK is x86_64 only; found $(uname -m))"
+  [ "$(ps -p 1 -o comm=)" = systemd ] || die "systemd is required"
+  cpus=$(nproc); [ "$cpus" -ge 2 ] || die "at least 2 CPUs are required (found $cpus)"
+  mem_mb=$(( $(sed -n 's/^MemTotal: *\([0-9]*\) kB/\1/p' /proc/meminfo) / 1024 ))
+  [ "$mem_mb" -ge 3500 ] || die "at least 4 GB of RAM is required (found $mem_mb MB)"
+  [ "$mem_mb" -ge 7500 ] || warn "8 GB of RAM is recommended (found $mem_mb MB)"
+  ok "$cpus CPUs, $mem_mb MB RAM"
+  root_free=$(( $(df --output=avail -k / | tail -1) / 1024 / 1024 ))
+  [ "$root_free" -ge 20 ] || die "at least 20 GB free on / is required for the containers (found ${root_free} GB)"
+  ok "${root_free} GB free on /"
+
+  log "Prerequisites"
+  export DEBIAN_FRONTEND=noninteractive
+  pkgs=(ca-certificates curl git python3 e2fsprogs util-linux kmod iproute2 procps)
+  need=(); for p in "${pkgs[@]}"; do dpkg -s "$p" >/dev/null 2>&1 || need+=("$p"); done
+  if [ ${#need[@]} -gt 0 ]; then apt-get update -qq && apt-get install -y -qq "${need[@]}" >/dev/null; fi
+  ok "packages: ${pkgs[*]}"
+
+  # ZeroFS is mounted over 9P on a Unix socket: kernel modules 9p + 9pnet_fd.
+  if ! modprobe 9p 2>/dev/null || ! modprobe 9pnet_fd 2>/dev/null; then
+    apt-get install -y -qq "linux-modules-extra-$(uname -r)" >/dev/null 2>&1 || true
+    modprobe 9p 2>/dev/null && modprobe 9pnet_fd 2>/dev/null \
+      || die "the kernel has no 9P support (modules 9p, 9pnet_fd). Install linux-modules-extra-$(uname -r) or use the generic kernel."
+  fi
+  printf '9p\n9pnet_fd\n' > /etc/modules-load.d/vmexec-9p.conf
+  ok "kernel 9P support"
+
+  # S3 rejects signed requests when the clock is off by more than 15 minutes.
+  if [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" != yes ]; then
+    timedatectl set-ntp true 2>/dev/null || true
+    for _ in $(seq 1 30); do [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = yes ] && break; sleep 1; done
+  fi
+  if [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = yes ]; then ok "clock synchronised (NTP)"
+  else warn "the clock is not NTP-synchronised; S3 requests fail if it drifts more than 15 minutes"; fi
+
+  for url in https://github.com https://download.docker.com ${ENDPOINT:+"$ENDPOINT"}; do
+    host=${url#https://}; host=${host%%/*}
+    getent hosts "$host" >/dev/null || die "cannot resolve $host (DNS)"
+    curl -s -o /dev/null --max-time 20 "$url" || die "no HTTPS connection to $host (firewall or proxy?)"
+  done
+  ok "DNS and HTTPS to github.com, download.docker.com${ENDPOINT:+, ${ENDPOINT#https://}}"
+
+  if ss -ltnH 'sport = :8000' | grep -q .; then
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx vmexec_web; then ok "port 8000 (VMExec)"
+    else die "port 8000 is in use by something else ($(ss -ltnpH 'sport = :8000' | sed 's/.*users:((\("[^"]*"\).*/\1/' | head -1))"; fi
+  else
+    ok "port 8000 free"
+  fi
+
+  if ! command -v docker >/dev/null || ! docker compose version >/dev/null 2>&1; then
+    log "Docker"
+    install -d -m 0755 /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" \
+      > /etc/apt/sources.list.d/docker.list
+    apt-get update -qq
+    apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null
+  fi
+  systemctl enable --now docker >/dev/null 2>&1 || true
+  ok "$(docker --version | cut -d, -f1), $(docker compose version --short 2>/dev/null | sed 's/^/compose /')"
+}
+preflight
+[ "$CHECK_ONLY" = 1 ] && { log "Checks passed"; exit 0; }
+
 [ -n "$BUCKET" ] && [ -n "$ENDPOINT" ] && [ -n "$REGION" ] || die "--bucket, --s3-endpoint and --s3-region are required"
 case "$ENDPOINT" in https://*) ;; *) die "--s3-endpoint must be https://" ;; esac
 [[ "$CACHE_GB" =~ ^[0-9]+$ ]] && [ "$CACHE_GB" -ge 10 ] || die "--cache-gb must be a whole number >= 10"
@@ -99,22 +175,6 @@ PY
 }
 
 current_url() { [ -f "$ZCONF" ] && sed -n 's/^url = "\(.*\)"$/\1/p' "$ZCONF" || true; }
-
-# ---------------------------------------------------------------- 1. packages
-log "Packages"
-export DEBIAN_FRONTEND=noninteractive
-need=()
-for p in ca-certificates curl python3 git; do dpkg -s "$p" >/dev/null 2>&1 || need+=("$p"); done
-if [ ${#need[@]} -gt 0 ]; then apt-get update -qq && apt-get install -y -qq "${need[@]}"; fi
-if ! command -v docker >/dev/null || ! docker compose version >/dev/null 2>&1; then
-  install -d -m 0755 /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-  . /etc/os-release
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" \
-    > /etc/apt/sources.list.d/docker.list
-  apt-get update -qq
-  apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-fi
 
 # ---------------------------------------------------------------- 2. ZeroFS binary
 if ! echo "$ZEROFS_BINARY_SHA256  /usr/local/bin/zerofs" | sha256sum -c --status 2>/dev/null; then

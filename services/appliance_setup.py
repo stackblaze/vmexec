@@ -7,6 +7,10 @@ inside the worker container:
       incrementals on. Clears the unused direct-S3 settings, which held
       an S3 key the app no longer needs (ZeroFS has its own, on the host).
 
+  python -m services.appliance_setup add-vcenter <name> <address>  < creds
+      Register vCenter (username and password on stdin, one per line) if it
+      is not registered yet. Verifies the login like Settings > vCenter.
+
   python -m services.appliance_setup copy-db /mnt/backups/_appliance
       Copy the database and its keys into backup storage (daily timer), so
       install.sh --recover on a new VM brings back jobs, policies and the
@@ -68,11 +72,36 @@ def copy_db(dest):
     print(f"copied database and keys to {dest}")
 
 
+def add_vcenter(name, address):
+    import esxi_handler
+    from models import init_db, SessionLocal, ESXiHost
+    from services import backup_ops
+    lines = sys.stdin.read().splitlines()
+    if len(lines) < 2 or not lines[0] or not lines[1]:
+        raise SystemExit("add-vcenter: expected username and password on stdin")
+    init_db()
+    db = SessionLocal()
+    try:
+        addr = esxi_handler.normalize_host(address)
+        if db.query(ESXiHost).filter(ESXiHost.host_ip == addr).first():
+            print(f"vCenter {addr} is already connected")
+            return
+        try:
+            backup_ops.add_esxi_host(db, name, addr, lines[0], lines[1], connection_type="auto")
+        except (ValueError, ConnectionError) as e:
+            raise SystemExit(f"add-vcenter: {e}")
+        print(f"vCenter {addr} connected as {name}")
+    finally:
+        db.close()
+
+
 def main(argv):
     if len(argv) == 2 and argv[0] == "storage":
         return set_storage(argv[1])
     if len(argv) == 2 and argv[0] == "copy-db":
         return copy_db(argv[1])
+    if len(argv) == 3 and argv[0] == "add-vcenter":
+        return add_vcenter(argv[1], argv[2])
     raise SystemExit(__doc__)
 
 
