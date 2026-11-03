@@ -27,6 +27,8 @@ services:
       - VMEXEC_REPO_LOCATION=${VMEXEC_REPO_LOCATION:-}
       - VMEXEC_REPO_ENCRYPTED=${VMEXEC_REPO_ENCRYPTED:-}
       - VMEXEC_ZEROFS_CACHE_LIMIT_GB=${VMEXEC_ZEROFS_CACHE_LIMIT_GB:-}
+      # Prefix of alert messages, e.g. the region slug (set by install.sh)
+      - VMEXEC_INSTANCE_NAME=${VMEXEC_INSTANCE_NAME:-}
     command: python -u main.py
 
   # ─── Background Worker Daemon ─────────────────────────────────────────────
@@ -52,6 +54,8 @@ services:
       - VMEXEC_REPO_LOCATION=${VMEXEC_REPO_LOCATION:-}
       - VMEXEC_REPO_ENCRYPTED=${VMEXEC_REPO_ENCRYPTED:-}
       - VMEXEC_ZEROFS_CACHE_LIMIT_GB=${VMEXEC_ZEROFS_CACHE_LIMIT_GB:-}
+      # Prefix of alert messages, e.g. the region slug (set by install.sh)
+      - VMEXEC_INSTANCE_NAME=${VMEXEC_INSTANCE_NAME:-}
     command: python -u worker_daemon.py
 
 volumes:
