@@ -442,8 +442,6 @@ def patch_vm(
 ):
     try:
         vm = backup_ops.update_vm_job(db, vm_id, body.model_dump(exclude_unset=True))
-    except backup_ops.PowerOffNotAllowed as e:
-        raise HTTPException(status_code=400, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     from models import Config

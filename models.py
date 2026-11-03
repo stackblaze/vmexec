@@ -318,7 +318,15 @@ def init_db():
         db.commit()
     db.close()
 
-    # 5. Default backup policies (Daily, Weekly); selected VMs join Daily.
+    # 5. "Power off for backup" was removed: clear any flag left from before.
+    db = SessionLocal()
+    try:
+        db.query(VM).filter(VM.power_off_for_backup == True).update({"power_off_for_backup": False})  # noqa: E712
+        db.commit()
+    finally:
+        db.close()
+
+    # 6. Default backup policies (Daily, Weekly); selected VMs join Daily.
     from services.policy_ops import ensure_default_policies
     db = SessionLocal()
     try:

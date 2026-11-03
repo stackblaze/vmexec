@@ -504,34 +504,9 @@ def perform_backup(vm_id: int):
                 "Disable exclude_infra_vms in settings to override."
             )
 
-        # --- POWER OFF (if configured) ---
-        if getattr(vm, 'power_off_for_backup', False):
-            esxi_vm = vsphere_context.find_vm_by_name(si, vm.vm_name)
-            current_power = getattr(esxi_vm.runtime, 'powerState', 'poweredOff') if esxi_vm else 'poweredOff'
-            blocked = power_guard.power_off_block_reason(si, esxi_vm, vm.vm_name, host.host_ip)
-
-            if blocked and current_power != 'poweredOff':
-                msg = f"Power off for backup ignored for {vm.vm_name}: {blocked}. Backing up live instead."
-                log_warn(f"[PID {pid}] {msg}")
-                db.add(BackupLog(vm_name=vm.vm_name, status="Warning", message=msg))
-                db.commit()
-            elif current_power != 'poweredOff':
-                vm.current_action = "Shutting down VM..."
-                vm.progress = 0
-                db.commit()
-                log_info(f"[PID {pid}] Power-off-for-backup enabled. Shutting down {vm.vm_name}...")
-                ok, msg = esxi_handler.shutdown_vm(si, vm.vm_name, graceful_timeout_mins=5, connected_host=host.host_ip)
-                if not ok:
-                    raise Exception(f"Shutdown failed: {msg}")
-                powered_off_by_us = True
-                send_event_notification(
-                    "vm_powered_off",
-                    f"[VMExec] VM Powered Off: {vm.vm_name}",
-                    f"VM '{vm.vm_name}' was powered off to perform a fast backup on {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}."
-                )
-                log_info(f"[PID {pid}] {vm.vm_name} is now off. Proceeding with fast backup.")
-            else:
-                log_info(f"[PID {pid}] power_off_for_backup: VM already off, skipping shutdown step.")
+        # "Power off for backup" was removed (2026-11-03): backups always run
+        # with the VM on, from a snapshot. powered_off_by_us stays False, so
+        # the power-on step below never runs.
 
         # --- PREFLIGHT ---
         vm.current_action = "Preflight checks..."

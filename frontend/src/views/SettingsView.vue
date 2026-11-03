@@ -97,14 +97,6 @@
           <button v-if="auth.isAdmin" type="button" class="inline-flex items-center justify-center gap-1.5 rounded-md border border-btn-sec-border bg-btn-sec px-3 py-2 text-sm font-medium text-btn-sec-text hover:bg-btn-sec-hover disabled:opacity-55 !py-1.5 !text-xs hover:!text-red-600" @click="removeHost(h.id)">Disconnect</button>
         </div>
       </div>
-      <div class="bg-card border border-border rounded-lg shadow-card p-6">
-        <h3 class="text-sm font-semibold m-0">Never powered off</h3>
-        <p class="text-xs text-muted mt-1 mb-3">VMExec will not shut these down. They are backed up with the VM on.</p>
-        <div class="flex flex-wrap gap-2">
-          <span v-for="n in status?.never_powered_off || []" :key="n" class="text-xs px-2.5 py-1 rounded-full border border-border bg-nav">{{ n }}</span>
-          <span v-if="!(status?.never_powered_off || []).length" class="text-xs text-muted">None found</span>
-        </div>
-      </div>
     </section>
 
     <!-- Alerts -->

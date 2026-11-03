@@ -609,8 +609,7 @@ def update_job(
         vm.schedule_minute = schedule_minute
         vm.retention_count = retention_count
         vm.is_job_active = is_job_active
-        import power_guard
-        vm.power_off_for_backup = power_off_for_backup and not power_guard.name_block_reason(vm.vm_name)
+        vm.power_off_for_backup = False  # power-off for backup was removed
         vm.cbt_enabled = cbt_enabled
         vm.schedule_frequency = schedule_frequency if schedule_frequency in ("daily", "weekly", "monthly") else "daily"
         valid_days = [d.strip() for d in schedule_days.split(',') if d.strip().isdigit() and 0 <= int(d.strip()) <= 6]

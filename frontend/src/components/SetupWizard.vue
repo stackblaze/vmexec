@@ -59,7 +59,7 @@
               <input type="checkbox" class="w-4 h-4 accent-brand" :checked="picked.has(vm.id)" @change="toggle(vm.id, $event.target.checked)" />
               <span class="flex-1 min-w-0 truncate">{{ vm.vm_name }}</span>
               <span class="text-xs text-muted whitespace-nowrap">
-                {{ vm.storage_gb ? `${vm.storage_gb} GB` : '' }}{{ vm.storage_gb && neverOff.has(vm.vm_name) ? ' · ' : '' }}{{ neverOff.has(vm.vm_name) ? 'never powered off' : '' }}{{ vm.policy_name ? ` · now ${vm.policy_name}` : '' }}
+                {{ [vm.storage_gb ? `${vm.storage_gb} GB` : '', vm.policy_name ? `now ${vm.policy_name}` : ''].filter(Boolean).join(' · ') }}
               </span>
             </label>
             <p v-if="!shown.length" class="px-3.5 py-6 text-sm text-muted text-center m-0">
@@ -133,8 +133,6 @@ const search = ref('')
 const busy = ref(false)
 const refreshing = ref(false)
 const error = ref('')
-
-const neverOff = computed(() => new Set(status.value?.never_powered_off || []))
 
 const checks = computed(() => {
   const s = status.value

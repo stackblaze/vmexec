@@ -249,12 +249,6 @@ def get_status(db, scheduler_paused=False, vddk_installed=True, probe=True):
         "protected": {"count": len(protected), "total": len(vms)},
         "storage": storage,
         "vcenters": vcenters,
-        "never_powered_off": _never_powered_off(vms),
         "problems": problems,
     }
 
-
-def _never_powered_off(vms):
-    """VMs the power guard always refuses to power off (by name), for Settings > vCenter."""
-    import power_guard
-    return sorted(v.vm_name for v in vms if power_guard.name_block_reason(v.vm_name))
