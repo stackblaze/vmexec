@@ -118,6 +118,7 @@ def export_cbt_backup(
 
     snap_obj = None
     snap_name = None
+    point_committed = False
 
     try:
         if progress_callback:
@@ -389,6 +390,7 @@ def export_cbt_backup(
             "timestamp": dt.datetime.utcnow().isoformat() + "Z",
         })
         bm.save_chain(storage, vm_name, chain)
+        point_committed = True
 
         if progress_callback:
             progress_callback(100)
@@ -403,6 +405,16 @@ def export_cbt_backup(
                 pass
         log_error(f"[CBT] Backup failed: {e}")
         return False, str(e), None
+    finally:
+        # A point that never reached the chain index is not a restore point:
+        # remove its folder (it held up to a full disk image, also in S3).
+        if not point_committed:
+            try:
+                if storage.exists(dest_rel_dir):
+                    storage.delete_dir(dest_rel_dir)
+                    log_info(f"[CBT] Removed incomplete point {dest_rel_dir}")
+            except Exception as clean_err:  # noqa: BLE001
+                log_warn(f"[CBT] Could not remove incomplete point {dest_rel_dir}: {clean_err}")
 
 
 def _find_prev_disk_entry(storage, vm_name, parent_id, device_key):

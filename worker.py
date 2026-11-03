@@ -599,6 +599,7 @@ def perform_backup(vm_id: int):
 
         success = False
         result_msg = ""
+        skip_legacy = False  # set when the chain path failed: no legacy full on top
         if use_cbt:
             import cbt_transport
             if cbt_transport.cbt_supported_storage(storage):
@@ -612,42 +613,53 @@ def perform_backup(vm_id: int):
                     except Exception:
                         pass
 
-                success, result_msg, cbt_dest = cbt_transport.export_cbt_backup(
-                    si=si,
-                    vm_name=vm.vm_name,
-                    storage=storage,
-                    config=config,
-                    vm_record=vm,
-                    host_ip=host.host_ip,
-                    host_user=host.username,
-                    host_password=host.password,
-                    progress_callback=progress_cb,
-                    speed_callback=speed_cb,
-                    is_cancelled_func=cancel_check,
-                    connection_type=getattr(host, "connection_type", None) or vsphere_context.CONN_AUTO,
-                    create_snapshot_func=backup_engine._create_live_backup_snapshot,
-                    remove_snapshot_func=backup_engine._remove_backup_snapshot,
-                    download_http_func=backup_engine._download_file_http,
-                    download_http_range_func=backup_engine._download_file_http_range,
-                    action_callback=cbt_action,
-                )
+                # Two tries on the chain path, each with its own snapshot. A
+                # failed try leaves nothing behind (export_cbt_backup removes
+                # the incomplete point) and the chain is unchanged, so the
+                # second try is the same backup again, not a resume.
+                cbt_attempt = 1
+                while True:
+                    success, result_msg, cbt_dest = cbt_transport.export_cbt_backup(
+                        si=si,
+                        vm_name=vm.vm_name,
+                        storage=storage,
+                        config=config,
+                        vm_record=vm,
+                        host_ip=host.host_ip,
+                        host_user=host.username,
+                        host_password=host.password,
+                        progress_callback=progress_cb,
+                        speed_callback=speed_cb,
+                        is_cancelled_func=cancel_check,
+                        connection_type=getattr(host, "connection_type", None) or vsphere_context.CONN_AUTO,
+                        create_snapshot_func=backup_engine._create_live_backup_snapshot,
+                        remove_snapshot_func=backup_engine._remove_backup_snapshot,
+                        download_http_func=backup_engine._download_file_http,
+                        download_http_range_func=backup_engine._download_file_http_range,
+                        action_callback=cbt_action,
+                    )
+                    if success or cancel_check() or cbt_attempt >= 2:
+                        break
+                    log_warn(f"[CBT] Attempt {cbt_attempt} failed ({result_msg}); trying once more")
+                    cbt_attempt += 1
+                    vm.progress = 0
+                    vm.speed_mbps = 0.0
+                    vm.current_action = "Retrying backup..."
+                    db.commit()
                 if cbt_dest:
                     dest_rel_dir = cbt_dest
                 if not success:
-                    # export_cbt_backup reports a user cancel as an ordinary
-                    # failure string — don't restart the cancelled work as a
-                    # legacy full backup.
                     if cancel_check():
                         raise BackupCancelled("Backup cancelled by user")
-                    log_warn(f"[CBT] Failed ({result_msg}); falling back to legacy full backup")
-                    vm.progress = 0
-                    vm.speed_mbps = 0.0
-                    vm.current_action = "Fallback: full backup via NBD..."
-                    db.commit()
+                    # No fallback to the legacy whole-disk backup: it read
+                    # every provisioned byte into another folder layout (586 GB
+                    # for vCenter) and hid the real error. Fail and alert.
+                    result_msg = f"Backup failed after 2 attempts: {result_msg}"
+                    skip_legacy = True
             else:
                 log_warn("[CBT] S3 storage detected; using legacy full backup")
 
-        if not success:
+        if not success and not skip_legacy:
             success, result_msg = backup_engine.export_vm_native(
                 si=si,
                 vm_name=vm.vm_name,
