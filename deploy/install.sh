@@ -364,8 +364,10 @@ mv "$ZENV.tmp" "$ZENV"; chmod 0600 "$ZENV"
 umask 022
 if [ "$NEW_PASSWORD" = 1 ]; then
   ( umask 077; printf '%s\n' "$PW" > "$PASSWORD_OUT" )
-  WRITE_RECOVERY_AT_END=1
 fi
+# Also when an earlier run generated the password but stopped before the end
+# (the operator has not collected it yet).
+[ -f "$PASSWORD_OUT" ] && WRITE_RECOVERY_AT_END=1
 
 
 # ---------------------------------------------------------------- 6. stop for a location change
@@ -626,7 +628,7 @@ if [ "$RECOVER" = 1 ]; then
   echo "  Connected to the existing backups. What came back:"
   docker exec vmexec_worker python -m services.appliance_setup summary "$MOUNT" | sed 's/^/    /' || true
 fi
-if [ "$NEW_PASSWORD" = 1 ]; then
+if [ "$WRITE_RECOVERY_AT_END" = 1 ]; then
   echo
   echo "  NEW encryption password. Without it the backups in S3 cannot be read."
   echo "  $RECOVERY_OUT holds it with everything a new VM needs to take over these"
