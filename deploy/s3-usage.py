@@ -7,7 +7,8 @@ prefix and writes only totals to a file the web container reads:
 
   s3-usage.py <endpoint> <region> <bucket> <prefix> <out.json>
 
-Output: {"bytes": N, "objects": N, "location": "bucket/prefix", "at": ISO}.
+Output: {"bytes": N, "objects": N, "location": "bucket/prefix", "at": ISO,
+         "newest": ISO or null (last write under the prefix)}.
 Standard library only (SigV4 by hand). Credentials are never written out.
 """
 import datetime
@@ -50,10 +51,12 @@ def list_page(endpoint, region, bucket, prefix, token, ak, sk):
         root = ET.fromstring(r.read())
     ns = {"s": root.tag.split("}")[0].strip("{")} if root.tag.startswith("{") else {}
     find = (lambda e, t: e.findall(f"s:{t}", ns)) if ns else (lambda e, t: e.findall(t))
-    sizes = [int(c.findtext("s:Size" if ns else "Size", namespaces=ns) or 0) for c in find(root, "Contents")]
+    items = find(root, "Contents")
+    sizes = [int(c.findtext("s:Size" if ns else "Size", namespaces=ns) or 0) for c in items]
+    stamps = [c.findtext("s:LastModified" if ns else "LastModified", namespaces=ns) or "" for c in items]
     truncated = (root.findtext("s:IsTruncated" if ns else "IsTruncated", namespaces=ns) or "false") == "true"
     nxt = root.findtext("s:NextContinuationToken" if ns else "NextContinuationToken", namespaces=ns)
-    return sizes, (nxt if truncated else None)
+    return sizes, stamps, (nxt if truncated else None)
 
 
 def main():
@@ -63,15 +66,21 @@ def main():
     prefix = prefix.strip("/") + "/"
     ak, sk = os.environ["AWS_ACCESS_KEY_ID"], os.environ["AWS_SECRET_ACCESS_KEY"]
     total = count = 0
+    newest = None
     token = None
     while True:
-        sizes, token = list_page(endpoint, region, bucket, prefix, token, ak, sk)
+        sizes, stamps, token = list_page(endpoint, region, bucket, prefix, token, ak, sk)
+        for t in stamps:
+            if t:
+                d = datetime.datetime.fromisoformat(t.replace("Z", "+00:00"))
+                newest = d if newest is None or d > newest else newest
         total += sum(sizes)
         count += len(sizes)
         if not token:
             break
     doc = {"bytes": total, "objects": count, "location": f"{bucket}/{prefix.rstrip('/')}",
-           "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
+           "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+           "newest": newest.astimezone(datetime.timezone.utc).isoformat(timespec="seconds") if newest else None}
     tmp = out + ".tmp"
     with open(tmp, "w") as f:
         json.dump(doc, f)

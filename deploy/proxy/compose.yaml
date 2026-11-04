@@ -1,0 +1,16 @@
+# Public URL for VMExec (deploy/public-access.sh copies this to /opt/vmexec-proxy).
+# Host network: Caddy listens on :443 and reaches the UI on 127.0.0.1:8000.
+services:
+  caddy:
+    build: ./caddy
+    image: vmexec-caddy:2.10.2-alpine-bunny-v1.2.0
+    restart: unless-stopped
+    network_mode: host
+    env_file: [/etc/vmexec/caddy.env]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+volumes:
+  caddy-data:
+  caddy-config:

@@ -70,19 +70,28 @@ On a fresh **Ubuntu 22.04 or 24.04** VM (x86_64, 2+ CPUs, 4 GB+ RAM, 20 GB free 
 curl -fsSL https://raw.githubusercontent.com/stackblaze/vmexec/main/install.sh | sudo bash
 ```
 
-The installer checks the VM and installs everything VMExec needs (Docker, Python, kernel 9P support). It then asks a few questions:
+The installer checks the VM and installs everything VMExec needs (Docker, Python, kernel 9P support). It first asks what you want to do: start a **new appliance**, or **connect to existing backups** (see below). For a new appliance it then asks:
 
 1. **S3 storage:** endpoint, region, bucket, folder and key. The key is checked against the bucket straight away.
 2. **Cache disk:** pick a blank disk. It is formatted and used as a local cache. Backups live in S3, so this disk never fills up.
 3. **VMware VDDK:** the path to `VMware-vix-disklib-*.x86_64.tar.gz`. VMware does not allow it to be redistributed, so download it from [Broadcom](https://developer.broadcom.com/sdks/vmware-virtual-disk-development-kit-vddk/latest) and copy it to the VM first.
 4. **vCenter:** address and a backup account (optional, or later in Settings).
 5. **A name** for alerts.
+6. **Public URL (optional):** a hostname, the addresses allowed in, and a Bunny API key. The UI is then served at `https://<hostname>` with a Let's Encrypt certificate (DNS-01, so no inbound access is needed), SSH and HTTPS are open only to those addresses, and port 8000 is closed from outside. The VM's address itself comes from how you build the VM.
 
-It shows a summary and only changes things after you confirm. Backups are stored through [ZeroFS](https://github.com/Barre/ZeroFS), encrypted with a password the installer generates and saves to `/root/vmexec-zerofs-password.txt`. **Keep that password safe:** without it the backups cannot be read.
+It shows a summary and only changes things after you confirm. Backups are stored through [ZeroFS](https://github.com/Barre/ZeroFS), encrypted with a password the installer generates. It writes **`/root/vmexec-recovery.env`**: the password plus everything a new VM needs to take over the backups (S3 location and key, public URL settings). **Put that file in your password manager:** without the password the backups cannot be read. Write a fresh copy at any time with `sudo /opt/vmexec/deploy/install.sh --write-recovery-file FILE`.
 
-Re-running the installer is safe: it changes only what is different. To rebuild an appliance from its backups on a new VM, run it with the same bucket and folder and choose **recover** (you need the encryption password).
+Re-running the installer is safe: it changes only what is different.
 
-Without questions, for automation: `curl -fsSL …/install.sh | sudo bash -s -- --bucket B --s3-endpoint URL --s3-region R --credentials-file F --vddk TARBALL`. See `deploy/install.sh --help` for all options.
+### Connect a new VM to existing backups
+
+When an appliance is lost, build a new VM (same requirements), copy the recovery file and the VDDK tarball to it, run the one-line installer and choose **Connect to existing backups**. It asks only for the recovery file (or the S3 location, key and encryption password, typed in), the cache disk, the VDDK, and whether to set up the public URL. The backups, jobs, policies, protected VMs, the vCenter connection, the users with their MFA and the appliance's settings come back from the copy the appliance makes every hour. At the end it lists what came back.
+
+The old appliance must be **off**: ZeroFS allows one appliance per repository. The installer refuses while the backups were written in the last 15 minutes (a running appliance writes every few minutes even when idle).
+
+Without questions: `curl -fsSL …/install.sh | sudo bash -s -- --recovery-file F --vddk TARBALL --cache-dev /dev/sdb --yes`.
+
+Without questions, for a new appliance: `curl -fsSL …/install.sh | sudo bash -s -- --bucket B --s3-endpoint URL --s3-region R --credentials-file F --vddk TARBALL`. See `deploy/install.sh --help` for all options.
 
 Open **https://&lt;vm-ip&gt;:8000**. The first login is `admin` / `admin`; you are asked to set up MFA, then change the password under **Settings → Users**.
 
