@@ -387,6 +387,7 @@ if ! mountpoint -q "$CACHE_MNT"; then
   if ! blkid -L "$CACHE_LABEL" >/dev/null 2>&1; then
     [ -n "$CACHE_DEV" ] || die "no disk labelled $CACHE_LABEL: pass --cache-dev /dev/sdX (a blank disk)"
     [ -b "$CACHE_DEV" ] || die "$CACHE_DEV is not a block device"
+    [ "$(lsblk -bdno SIZE "$CACHE_DEV" 2>/dev/null || echo 0)" -ge 10000000000 ] || die "$CACHE_DEV is smaller than 10 GB; pick the cache disk"
     [ "$(lsblk -npo NAME "$CACHE_DEV" | wc -l)" = 1 ] || die "$CACHE_DEV has partitions; refusing to format it"
     [ -z "$(blkid -p -o value -s TYPE "$CACHE_DEV" 2>/dev/null)" ] || die "$CACHE_DEV has a filesystem; refusing to format it"
     if [ "$YES" != 1 ]; then

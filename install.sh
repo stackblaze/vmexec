@@ -238,6 +238,8 @@ if blkid -L vmexec-data >/dev/null 2>&1; then
 else
   mapfile -t blanks < <(lsblk -dbnpo NAME,SIZE,TYPE | while read -r d s t; do
     [ "$t" = disk ] || continue
+    # not floppies, CD drives or anything too small to be the cache
+    [ "$s" -ge 10000000000 ] || continue
     [ "$(lsblk -npo NAME "$d" | wc -l)" = 1 ] || continue
     [ -z "$(blkid -p -o value -s TYPE "$d" 2>/dev/null)" ] || continue
     findmnt -rno SOURCE | grep -qx "$d" && continue
