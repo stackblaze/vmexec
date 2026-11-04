@@ -55,7 +55,17 @@ def set_storage(path):
     print(f"storage: {path} (ZeroFS), incrementals on, direct-S3 settings cleared")
 
 
+def _fsync(path):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def copy_db(dest):
+    # Every file and the folder are fsynced: ZeroFS keeps unsynced writes in its
+    # local cache, and an appliance that dies (the case this copy is for) loses them.
     os.makedirs(dest, mode=0o700, exist_ok=True)
     for name in DB_FILES:
         src = os.path.join(DATA_DIR, name)
@@ -67,7 +77,9 @@ def copy_db(dest):
         try:
             with sqlite3.connect(src) as s, sqlite3.connect(tmp) as d:
                 s.backup(d)
+            d.close()
             os.chmod(tmp, 0o600)
+            _fsync(tmp)
             os.replace(tmp, os.path.join(dest, name))
         finally:
             if os.path.exists(tmp):
@@ -78,7 +90,9 @@ def copy_db(dest):
             dst = os.path.join(dest, name)
             shutil.copyfile(src, dst + ".tmp")
             os.chmod(dst + ".tmp", 0o600)
+            _fsync(dst + ".tmp")
             os.replace(dst + ".tmp", dst)
+    _fsync(dest)
     print(f"copied database and keys to {dest}")
 
 

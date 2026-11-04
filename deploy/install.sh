@@ -506,6 +506,8 @@ Type=oneshot
 ExecStart=/usr/bin/docker exec vmexec_worker python -m services.appliance_setup copy-db $MOUNT/_appliance
 ExecStart=/usr/bin/install -m 0600 $APP_DIR/.env $MOUNT/_appliance/app.env
 ExecStart=/bin/sh -c '[ ! -f $PUBLIC_ENV ] || install -m 0600 $PUBLIC_ENV $MOUNT/_appliance/public.env'
+# fsync: ZeroFS keeps unsynced writes in its local cache
+ExecStart=/bin/sh -c 'sync $MOUNT/_appliance/*.env $MOUNT/_appliance'
 EOF
 cat > /etc/systemd/system/vmexec-db-copy.timer <<'EOF'
 [Unit]
@@ -580,6 +582,12 @@ ls "$APP_DIR"/vendor/vddk/VMware-vix-disklib-*.tar.gz >/dev/null 2>&1 \
 project=$(get_kv "$ENVF" COMPOSE_PROJECT_NAME)
 volume="${project}_novabak_data"
 if [ "$RECOVER" = 1 ] && [ -f "$MOUNT/_appliance/backup_system.db" ]; then
+  # This VM's own copies replace these within the hour: keep the old appliance's.
+  keep="$MOUNT/_appliance/before-recover-$(date -u +%Y%m%dT%H%M%SZ)"
+  mkdir -m 0700 "$keep"
+  find "$MOUNT/_appliance" -maxdepth 1 -type f -exec cp -p {} "$keep/" \;
+  sync "$keep"/* "$keep" 2>/dev/null || true
+  log "Kept the old appliance's copy in $keep"
   vol_dir=$(docker volume inspect -f '{{.Mountpoint}}' "$volume" 2>/dev/null || true)
   if [ -z "$vol_dir" ] || [ ! -f "$vol_dir/backup_system.db" ]; then
     log "Restoring the database copy from $MOUNT/_appliance"
