@@ -1,0 +1,13 @@
+# Written by deploy/public-access.sh. The certificate comes from Let's Encrypt
+# through Bunny DNS-01, so no inbound access is needed for it.
+@DOMAIN@ {
+	tls {
+		dns bunny {env.BUNNY_API_KEY}
+		resolvers 1.1.1.1
+	}
+	reverse_proxy https://127.0.0.1:8000 {
+		transport http {
+			tls_insecure_skip_verify
+		}
+	}
+}

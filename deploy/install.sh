@@ -28,12 +28,26 @@
 #                         (for automation, which cannot know in advance)
 #   --change-location     move this appliance to a different bucket/prefix (fresh repository there)
 #   --rotate-s3-key       replace the S3 key (with --credentials-file or asked for)
+#   --recovery-file F     connect to an existing repository with everything in one file
+#                         (written by --write-recovery-file): S3 location and key, the
+#                         encryption password, and the public URL settings if any.
+#                         Implies --recover-if-present.
+#   --write-recovery-file F  write this appliance's recovery file to F (0600) and stop
+#   --force-recover       recover even though the bucket was written in the last 15 minutes
+#                         (only when you are sure the old appliance is off)
 #   --yes                 do not ask before formatting the cache disk
 #   --check               only run the checks and install the prerequisites, then stop
 #
+# Public URL (optional; the VM's address itself comes from the VM build):
+#   --public-domain D     serve the UI at https://D (Caddy, Let's Encrypt through Bunny DNS-01);
+#                         :8000 is then bound to 127.0.0.1 only
+#   --allow-from LIST     comma-separated IPs/CIDRs allowed to reach 22 and 443 (required)
+#   --bunny-key-file F    KEY=VALUE file with BUNNY_API_KEY (or from --recovery-file)
+#
 # The encryption password is generated once and never overwritten. Without it the
 # backups in S3 cannot be read: on a fresh install it is written to
-# /root/vmexec-zerofs-password.txt (0600) to put in your password manager and the vault.
+# /root/vmexec-zerofs-password.txt and, with everything else a new VM needs, to
+# /root/vmexec-recovery.env (both 0600): put them in your password manager and the vault.
 set -euo pipefail
 
 ZEROFS_VERSION=2.3.5
@@ -50,9 +64,15 @@ ZDIR=/etc/zerofs
 ZENV=$ZDIR/zerofs.env
 ZCONF=$ZDIR/config.toml
 PASSWORD_OUT=/root/vmexec-zerofs-password.txt
+RECOVERY_OUT=/root/vmexec-recovery.env
+PUBLIC_ENV=/etc/vmexec/public.env
+CADDY_ENV=/etc/vmexec/caddy.env
+# A running appliance writes to its repository every few minutes even when idle.
+WRITER_QUIET_MIN=15
 
-BUCKET="" PREFIX=vmexec ENDPOINT="" REGION="" INSTANCE="" CRED_FILE="" VDDK="" CACHE_DEV=""
+BUCKET="" PREFIX="" ENDPOINT="" REGION="" INSTANCE="" CRED_FILE="" VDDK="" CACHE_DEV=""
 CACHE_GB=400 PASSWORD_FILE="" RECOVER=0 RECOVER_IF_PRESENT=0 CHANGE_LOCATION=0 ROTATE_KEY=0 YES=0 CHECK_ONLY=0
+RECOVERY_FILE="" WRITE_RECOVERY="" WRITE_RECOVERY_AT_END=0 FORCE_RECOVER=0 PUBLIC_DOMAIN="" ALLOW_FROM="" BUNNY_FILE=""
 
 log() { printf '\033[1m==> %s\033[0m\n' "$*"; }
 die() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
@@ -61,6 +81,12 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --bucket) BUCKET=$2; shift 2 ;;
     --prefix) PREFIX=${2%/}; PREFIX=${PREFIX#/}; shift 2 ;;
+    --recovery-file) RECOVERY_FILE=$2; shift 2 ;;
+    --write-recovery-file) WRITE_RECOVERY=$2; shift 2 ;;
+    --force-recover) FORCE_RECOVER=1; shift ;;
+    --public-domain) PUBLIC_DOMAIN=${2,,}; shift 2 ;;
+    --allow-from) ALLOW_FROM=$2; shift 2 ;;
+    --bunny-key-file) BUNNY_FILE=$2; shift 2 ;;
     --s3-endpoint) ENDPOINT=${2%/}; shift 2 ;;
     --s3-region) REGION=$2; shift 2 ;;
     --instance-name) INSTANCE=$2; shift 2 ;;
@@ -75,12 +101,92 @@ while [ $# -gt 0 ]; do
     --rotate-s3-key) ROTATE_KEY=1; shift ;;
     --yes) YES=1; shift ;;
     --check) CHECK_ONLY=1; shift ;;
-    -h|--help) sed -n '2,39p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,50p' "$0"; exit 0 ;;
     *) die "unknown option $1 (see --help)" ;;
   esac
 done
 
 [ "$(id -u)" = 0 ] || die "run as root"
+
+# KEY=VALUE reader that never sources (values may contain shell characters).
+get_kv() { # file key
+  [ -f "$1" ] || return 0
+  python3 - "$1" "$2" <<'PY'
+import sys
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    k, v = line.split("=", 1)
+    if k.strip().removeprefix("export ").strip() == sys.argv[2]:
+        print(v.strip().strip("'\""), end="")
+        break
+PY
+}
+
+# ---------------------------------------------------------------- recovery file out
+# Everything a brand-new VM needs to take over this appliance's backups, in one
+# file for the password manager. Secrets: written 0600, never printed.
+write_recovery_file() { # dest
+  local dest=$1 url
+  url=$(sed -n 's/^url = "s3:\/\/\(.*\)"$/\1/p' "$ZDIR/config.toml" 2>/dev/null || true)
+  [ -n "$url" ] && [ -f "$ZENV" ] || die "no VMExec install on this VM to write a recovery file from"
+  ( umask 077
+    {
+      echo "# VMExec recovery file: $(get_kv /etc/vmexec/s3-usage.env S3_BUCKET)/${url#*/}, written $(date -u +%FT%TZ)"
+      echo "# With this file and the VDDK tarball, a new VM takes over these backups:"
+      echo "#   curl -fsSL https://raw.githubusercontent.com/stackblaze/vmexec/main/install.sh | sudo bash"
+      echo "#   (choose \"Connect to existing backups\"), or deploy/install.sh --recovery-file <this file>"
+      echo "# Anyone holding it can read and delete the backups. Password manager only."
+      echo "VMEXEC_S3_ENDPOINT=$(get_kv /etc/vmexec/s3-usage.env S3_ENDPOINT)"
+      echo "VMEXEC_S3_REGION=$(get_kv /etc/vmexec/s3-usage.env S3_REGION)"
+      echo "VMEXEC_BUCKET=${url%%/*}"
+      echo "VMEXEC_PREFIX=${url#*/}"
+      echo "AWS_ACCESS_KEY_ID=$(get_kv "$ZENV" AWS_ACCESS_KEY_ID)"
+      echo "AWS_SECRET_ACCESS_KEY=$(get_kv "$ZENV" AWS_SECRET_ACCESS_KEY)"
+      echo "ZEROFS_PASSWORD=$(get_kv "$ZENV" ZEROFS_PASSWORD)"
+      if [ -f "$PUBLIC_ENV" ]; then
+        echo "VMEXEC_PUBLIC_DOMAIN=$(get_kv "$PUBLIC_ENV" VMEXEC_PUBLIC_DOMAIN)"
+        echo "VMEXEC_ALLOW_FROM=$(get_kv "$PUBLIC_ENV" VMEXEC_ALLOW_FROM)"
+        echo "BUNNY_API_KEY=$(get_kv "$CADDY_ENV" BUNNY_API_KEY)"
+      fi
+    } > "$dest.tmp"
+    mv "$dest.tmp" "$dest" )
+  chmod 0600 "$dest"
+}
+if [ -n "$WRITE_RECOVERY" ]; then
+  write_recovery_file "$WRITE_RECOVERY"
+  echo "Recovery file written to $WRITE_RECOVERY (0600). Put it in your password manager, then delete it here."
+  exit 0
+fi
+
+# ---------------------------------------------------------------- recovery file in
+PW_GIVEN=""
+if [ -n "$RECOVERY_FILE" ]; then
+  [ -f "$RECOVERY_FILE" ] || die "$RECOVERY_FILE not found"
+  : "${ENDPOINT:=$(get_kv "$RECOVERY_FILE" VMEXEC_S3_ENDPOINT)}"; ENDPOINT=${ENDPOINT%/}
+  : "${REGION:=$(get_kv "$RECOVERY_FILE" VMEXEC_S3_REGION)}"
+  : "${BUCKET:=$(get_kv "$RECOVERY_FILE" VMEXEC_BUCKET)}"
+  : "${PREFIX:=$(get_kv "$RECOVERY_FILE" VMEXEC_PREFIX)}"
+  : "${PUBLIC_DOMAIN:=$(get_kv "$RECOVERY_FILE" VMEXEC_PUBLIC_DOMAIN)}"
+  : "${ALLOW_FROM:=$(get_kv "$RECOVERY_FILE" VMEXEC_ALLOW_FROM)}"
+  [ -n "$CRED_FILE" ] || CRED_FILE=$RECOVERY_FILE
+  [ -n "$BUNNY_FILE" ] || { [ -n "$(get_kv "$RECOVERY_FILE" BUNNY_API_KEY)" ] && BUNNY_FILE=$RECOVERY_FILE; }
+  PW_GIVEN=$(get_kv "$RECOVERY_FILE" ZEROFS_PASSWORD)
+  [ -n "$PW_GIVEN" ] || die "$RECOVERY_FILE has no ZEROFS_PASSWORD"
+  RECOVER_IF_PRESENT=1
+fi
+PREFIX=${PREFIX:-vmexec}
+INSTANCE_GIVEN=${INSTANCE:+1}
+
+if [ -n "$PUBLIC_DOMAIN" ]; then
+  [[ "$PUBLIC_DOMAIN" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]] || die "--public-domain: not a hostname: $PUBLIC_DOMAIN"
+  [ -n "$ALLOW_FROM" ] || die "--public-domain needs --allow-from (who may reach 22 and 443)"
+  python3 -c 'import ipaddress,sys; [ipaddress.ip_network(x.strip(), strict=False) for x in sys.argv[1].split(",") if x.strip()]' "$ALLOW_FROM" 2>/dev/null \
+    || die "--allow-from: expected comma-separated IPs or CIDRs"
+  [ -n "$BUNNY_FILE" ] || [ -f "$CADDY_ENV" ] || die "--public-domain needs --bunny-key-file (BUNNY_API_KEY, for the certificate)"
+  [ -z "$BUNNY_FILE" ] || [ -n "$(get_kv "$BUNNY_FILE" BUNNY_API_KEY)" ] || die "$BUNNY_FILE has no BUNNY_API_KEY"
+fi
 
 # ---------------------------------------------------------------- 0. checks and prerequisites
 # Everything VMExec needs is checked or installed here, before anything else changes.
@@ -166,22 +272,6 @@ case "$ENDPOINT" in https://*) ;; *) die "--s3-endpoint must be https://" ;; esa
 INSTANCE=${INSTANCE:-$(hostname -s)}
 URL="s3://$BUCKET/$PREFIX"
 
-# KEY=VALUE reader that never sources (values may contain shell characters).
-get_kv() { # file key
-  [ -f "$1" ] || return 0
-  python3 - "$1" "$2" <<'PY'
-import sys
-for line in open(sys.argv[1]):
-    line = line.strip()
-    if not line or line.startswith("#") or "=" not in line:
-        continue
-    k, v = line.split("=", 1)
-    if k.strip().removeprefix("export ").strip() == sys.argv[2]:
-        print(v.strip().strip("'\""), end="")
-        break
-PY
-}
-
 current_url() { [ -f "$ZCONF" ] && sed -n 's/^url = "\(.*\)"$/\1/p' "$ZCONF" || true; }
 
 # ---------------------------------------------------------------- 2. ZeroFS binary
@@ -215,12 +305,16 @@ elif [ -z "$AK" ] || [ "$ROTATE_KEY" = 1 ]; then
   read -r -s -p "S3 secret access key: " SK; echo
 fi
 NEW_PASSWORD=0
+given=$PW_GIVEN
 if [ -n "$PASSWORD_FILE" ]; then
   given=$(tr -d '\r\n' < "$PASSWORD_FILE")
   [ -n "$given" ] || die "$PASSWORD_FILE is empty"
-  if [ -n "$PW" ] && [ "$PW" != "$given" ]; then die "--password-file differs from this appliance's password; refusing to replace it"; fi
+fi
+if [ -n "$given" ]; then
+  if [ -n "$PW" ] && [ "$PW" != "$given" ]; then die "the given encryption password differs from this appliance's password; refusing to replace it"; fi
   PW=$given
 fi
+unset given
 
 # ---------------------------------------------------------------- 5. what is in S3
 log "Checking $URL"
@@ -228,17 +322,34 @@ probe=$(mktemp)
 AWS_ACCESS_KEY_ID=$AK AWS_SECRET_ACCESS_KEY=$SK \
   python3 "$APP_DIR/deploy/s3-usage.py" "$ENDPOINT" "$REGION" "$BUCKET" "$PREFIX" "$probe" >/dev/null \
   || die "cannot list s3://$BUCKET/$PREFIX/ with this key (wrong key, bucket or endpoint?)"
-OBJECTS=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["objects"])' "$probe"); rm -f "$probe"
+OBJECTS=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["objects"])' "$probe")
+# Minutes since the last write under the prefix (-1: empty).
+QUIET_MIN=$(python3 -c '
+import datetime, json, sys
+n = json.load(open(sys.argv[1])).get("newest")
+print(-1 if not n else int((datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.fromisoformat(n)).total_seconds() // 60))' "$probe")
+rm -f "$probe"
 if [ "$RECOVER_IF_PRESENT" = 1 ] && [ "$OBJECTS" != 0 ] && [ "$OLD_URL" != "$URL" ]; then RECOVER=1; fi
 if [ "$RECOVER" = 1 ] && [ "$OBJECTS" = 0 ]; then die "--recover: $URL is empty, nothing to recover"; fi
 if [ "$OBJECTS" != 0 ] && [ "$RECOVER" != 1 ] && [ "$OLD_URL" != "$URL" ]; then
   die "$URL already holds $OBJECTS objects; use --recover to attach that repository, or pick an empty prefix"
 fi
 
+# ZeroFS allows one writer per repository. A running appliance writes every few
+# minutes even when idle, so recent writes mean the old one is probably still on.
+if [ "$RECOVER" = 1 ] && [ "$OLD_URL" != "$URL" ]; then
+  log "$URL: $OBJECTS objects, last written $QUIET_MIN minutes ago"
+  if [ "$QUIET_MIN" -lt "$WRITER_QUIET_MIN" ] && [ "$FORCE_RECOVER" != 1 ]; then
+    die "$URL was written $QUIET_MIN minutes ago: another appliance is probably still using it.
+  Power that VM off (or stop zerofs and docker on it), wait until nothing has been written for
+  $WRITER_QUIET_MIN minutes, and run again. Only if you are sure it is off: add --force-recover."
+  fi
+fi
+
 # Only now, knowing whether this is a recovery: a recovery must never get a
 # freshly generated password (it could not open the repository).
 if [ -z "$PW" ]; then
-  [ "$RECOVER" = 1 ] && die "--recover needs --password-file (the password the backups were written with)"
+  [ "$RECOVER" = 1 ] && die "--recover needs the encryption password the backups were written with (--password-file or --recovery-file)"
   PW=$(python3 -c 'import secrets, string; a = string.ascii_letters + string.digits; print("".join(secrets.choice(a) for _ in range(64)))')
   NEW_PASSWORD=1
 fi
@@ -253,6 +364,7 @@ mv "$ZENV.tmp" "$ZENV"; chmod 0600 "$ZENV"
 umask 022
 if [ "$NEW_PASSWORD" = 1 ]; then
   ( umask 077; printf '%s\n' "$PW" > "$PASSWORD_OUT" )
+  WRITE_RECOVERY_AT_END=1
 fi
 
 
@@ -378,23 +490,27 @@ S3_PREFIX=$PREFIX
 EOF
 sed "s#/opt/vmexec#$APP_DIR#g" "$APP_DIR/deploy/vmexec-s3-usage.service" > /etc/systemd/system/vmexec-s3-usage.service
 cp "$APP_DIR/deploy/vmexec-s3-usage.timer" /etc/systemd/system/
-# Daily copy of the app database into backup storage, for --recover.
-cat > /etc/systemd/system/vmexec-db-copy.service <<'EOF'
+# Hourly copy of the app database, its keys and the app settings (.env, and the
+# public URL settings) into backup storage, for --recover on a new VM.
+cat > /etc/systemd/system/vmexec-db-copy.service <<EOF
 [Unit]
-Description=VMExec: copy the database into backup storage (for install.sh --recover)
+Description=VMExec: copy the database and settings into backup storage (for install.sh --recover)
 Requires=docker.service mnt-backups.mount
 After=docker.service mnt-backups.mount
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/docker exec vmexec_worker python -m services.appliance_setup copy-db /mnt/backups/_appliance
+ExecStart=/usr/bin/docker exec vmexec_worker python -m services.appliance_setup copy-db $MOUNT/_appliance
+ExecStart=/usr/bin/install -m 0600 $APP_DIR/.env $MOUNT/_appliance/app.env
+ExecStart=/bin/sh -c '[ ! -f $PUBLIC_ENV ] || install -m 0600 $PUBLIC_ENV $MOUNT/_appliance/public.env'
 EOF
 cat > /etc/systemd/system/vmexec-db-copy.timer <<'EOF'
 [Unit]
-Description=VMExec: daily database copy into backup storage
+Description=VMExec: hourly database copy into backup storage
 
 [Timer]
-OnCalendar=*-*-* 12:00:00
+OnCalendar=hourly
+RandomizedDelaySec=300
 Persistent=true
 
 [Install]
@@ -426,11 +542,28 @@ set_env() { # key value; touches the file only when the value differs
   if grep -q "^$1=" "$ENVF"; then sed -i "s#^$1=.*#$1=$2#" "$ENVF"; else echo "$1=$2" >> "$ENVF"; fi
 }
 grep -q '^COMPOSE_PROJECT_NAME=' "$ENVF" || echo "COMPOSE_PROJECT_NAME=vmexec" >> "$ENVF"
+# Recovery: settings the old appliance had outside its database (protected VMs,
+# parallel disks, its name...). Keys this VM already has are kept; the storage
+# keys below are always this script's.
+if [ "$RECOVER" = 1 ] && [ -f "$MOUNT/_appliance/app.env" ]; then
+  restored=()
+  while IFS= read -r line; do
+    [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+    k=${line%%=*}
+    case "$k" in COMPOSE_PROJECT_NAME|VMEXEC_BACKUP_DIR|VMEXEC_REPO_LOCATION|VMEXEC_REPO_ENCRYPTED|VMEXEC_ZEROFS_CACHE_LIMIT_GB|VMEXEC_BIND) continue ;; esac
+    grep -q "^$k=" "$ENVF" && continue
+    printf '%s\n' "$line" >> "$ENVF"; restored+=("$k")
+  done < "$MOUNT/_appliance/app.env"
+  [ ${#restored[@]} -eq 0 ] || log "Restored settings from the old appliance: ${restored[*]}"
+  if [ -z "$INSTANCE_GIVEN" ] && [ -n "$(get_kv "$ENVF" VMEXEC_INSTANCE_NAME)" ]; then INSTANCE=$(get_kv "$ENVF" VMEXEC_INSTANCE_NAME); fi
+fi
 set_env VMEXEC_BACKUP_DIR "$MOUNT"
 set_env VMEXEC_INSTANCE_NAME "$INSTANCE"
 set_env VMEXEC_REPO_LOCATION "$BUCKET/$PREFIX"
 set_env VMEXEC_REPO_ENCRYPTED 1
 set_env VMEXEC_ZEROFS_CACHE_LIMIT_GB "$CACHE_GB"
+# Behind the public URL the UI is only reachable through Caddy.
+[ -z "$PUBLIC_DOMAIN" ] || set_env VMEXEC_BIND 127.0.0.1
 
 install -d -m 0755 "$APP_DIR/vendor/vddk"
 if [ -n "$VDDK" ]; then
@@ -470,15 +603,34 @@ done
 curl -sk -o /dev/null https://127.0.0.1:8000/ || die "the web UI did not come up (docker compose logs)"
 docker exec vmexec_worker python -m services.appliance_setup storage "$MOUNT"
 systemctl start vmexec-s3-usage.service || true
+systemctl start vmexec-db-copy.service || warn "first database copy failed (journalctl -u vmexec-db-copy)"
+
+# ---------------------------------------------------------------- 11. public URL (optional)
+if [ -n "$PUBLIC_DOMAIN" ]; then
+  log "Public URL https://$PUBLIC_DOMAIN"
+  BUNNY_FILE=${BUNNY_FILE:-$CADDY_ENV}
+  APP_DIR=$APP_DIR DOMAIN=$PUBLIC_DOMAIN ALLOW_FROM=$ALLOW_FROM BUNNY_FILE=$BUNNY_FILE PUBLIC_ENV=$PUBLIC_ENV CADDY_ENV=$CADDY_ENV \
+    "$APP_DIR/deploy/public-access.sh"
+  systemctl start vmexec-db-copy.service || true
+fi
 
 # ---------------------------------------------------------------- done
+[ "$WRITE_RECOVERY_AT_END" = 1 ] && write_recovery_file "$RECOVERY_OUT"
 log "Done"
 echo "  Backups:  $URL (ZeroFS, encrypted), mounted at $MOUNT"
 echo "  Cache:    $CACHE_MNT ($CACHE_GB GB budget)"
-echo "  UI:       https://$(hostname -I | awk '{print $1}'):8000"
+if [ -n "$PUBLIC_DOMAIN" ]; then echo "  UI:       https://$PUBLIC_DOMAIN (from $ALLOW_FROM)"
+else echo "  UI:       https://$(hostname -I | awk '{print $1}'):8000"; fi
+if [ "$RECOVER" = 1 ]; then
+  echo
+  echo "  Connected to the existing backups. What came back:"
+  docker exec vmexec_worker python -m services.appliance_setup summary "$MOUNT" | sed 's/^/    /' || true
+fi
 if [ "$NEW_PASSWORD" = 1 ]; then
   echo
-  echo "  NEW encryption password written to $PASSWORD_OUT (root only)."
-  echo "  Without it the backups in S3 cannot be read. Put it in your password manager"
-  echo "  and the region vault, then delete that file."
+  echo "  NEW encryption password. Without it the backups in S3 cannot be read."
+  echo "  $RECOVERY_OUT holds it with everything a new VM needs to take over these"
+  echo "  backups (S3 location and key). Put that file in your password manager (and the"
+  echo "  password in the region vault), then delete it and $PASSWORD_OUT here."
+  echo "  Refresh it any time: $APP_DIR/deploy/install.sh --write-recovery-file FILE"
 fi

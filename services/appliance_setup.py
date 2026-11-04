@@ -20,6 +20,11 @@ inside the worker container:
       Copy the database and its keys into backup storage (daily timer), so
       install.sh --recover on a new VM brings back jobs, policies and the
       vCenter registration together with the backups.
+
+  python -m services.appliance_setup summary /mnt/backups
+      What this appliance knows after install.sh --recover: vCenters,
+      protected VMs and policies, users, and the restore points in the
+      repository (read from each VM's chain.json).
 """
 import os
 import shutil
@@ -75,6 +80,42 @@ def copy_db(dest):
             os.chmod(dst + ".tmp", 0o600)
             os.replace(dst + ".tmp", dst)
     print(f"copied database and keys to {dest}")
+
+
+def summary(repo):
+    import json
+    from models import init_db, SessionLocal, ESXiHost, VM, BackupPolicy, User
+    from backup_manifest import chain_json_rel
+    init_db()
+    db = SessionLocal()
+    try:
+        hosts = db.query(ESXiHost).all()
+        print("vCenter:        " + (", ".join(f"{h.name} ({h.host_ip}, {h.username})" for h in hosts) or "none"))
+        protected = db.query(VM).filter(VM.policy_id.isnot(None)).all()
+        policies = db.query(BackupPolicy).all()
+        print(f"Protected VMs:  {len(protected)}" + (f" ({', '.join(sorted(v.vm_name for v in protected))})" if protected else ""))
+        print(f"Policies:       {len(policies)}" + (f" ({', '.join(p.name for p in policies)})" if policies else ""))
+        print(f"Users:          {db.query(User).count()}")
+    finally:
+        db.close()
+    total, vms, newest = 0, 0, ""
+    try:
+        names = sorted(os.listdir(repo))
+    except OSError as e:
+        print(f"Restore points: cannot read {repo}: {e}")
+        return
+    for name in names:
+        path = os.path.join(repo, chain_json_rel(name))
+        try:
+            with open(path) as f:
+                points = json.load(f).get("points") or []
+        except (OSError, ValueError):
+            continue
+        if points:
+            vms += 1
+            total += len(points)
+            newest = max([newest] + [str(p.get("timestamp") or "") for p in points])
+    print(f"Restore points: {total} across {vms} VMs" + (f", newest {newest}" if newest else ""))
 
 
 def add_vcenter(name, address):
@@ -140,6 +181,8 @@ def main(argv):
         return set_storage(argv[1])
     if len(argv) == 2 and argv[0] == "copy-db":
         return copy_db(argv[1])
+    if len(argv) == 2 and argv[0] == "summary":
+        return summary(argv[1])
     if len(argv) == 3 and argv[0] == "add-vcenter":
         return add_vcenter(argv[1], argv[2])
     if len(argv) == 3 and argv[0] == "vcenter":
